@@ -1,2 +1,8 @@
+# Ignore specific folders (recursively)
+Cloned_C1/
+AlloyDesign/CALPHAD_Analysis/
+AlloyDesign/Miscellaneous/
+
+# Ignore specific Jupyter Notebook files
 ChatGPT_LitRevPrompts.ipynb
 ChatGPT_MentorPrompts.ipynb
