@@ -7,6 +7,6 @@ MD_runs/
 MD_template/
 
 # Ignore specific Jupyter Notebook files
-ChatGPT_LitRevPrompts.ipynb
-ChatGPT_MentorPrompts.ipynb
-ChatGPT_AlloyDesignPrompts.ipynb
+TheoryConfig.ipynb
+AlloyDesignConfig.ipynb
+LiteratureReviewConfig.ipynb
