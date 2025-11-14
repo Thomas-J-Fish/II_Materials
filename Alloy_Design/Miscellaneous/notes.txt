@@ -1,0 +1,18 @@
+Martensitic:
+
+
+Duplex:
+Check C
+Cr - 22/23
+Mo - 3
+Ni - 6
+
+Hyper Duplex:
+C < 0.1
+Cr - 28
+Mo - 6
+Ni - 8
+
+link pren to a relative point - what is the damage for a specific value and what is requrired
+
+run 3 sims for each type - compare within run and between runs
