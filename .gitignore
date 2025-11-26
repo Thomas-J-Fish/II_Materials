@@ -5,6 +5,8 @@ AlloyDesign/Miscellaneous/
 dl-poly/
 MD_runs/
 MD_template/
+Formal_Report/
+Literature_Review/
 
 # Ignore specific Jupyter Notebook files
 TheoryConfig.ipynb
