@@ -1,0 +1,50 @@
+# in.caf2_md
+units           metal
+atom_style      charge
+boundary        p p p
+
+read_data       caf2_4x4x4.data
+
+# --- neighbor & electrostatics ---
+neighbor        2.0 bin
+neigh_modify    delay 0 every 1 check yes
+pair_style      buck/coul/long 10.0
+kspace_style    pppm 1e-5
+
+# --- types, masses, groups (type 1=Ca, type 2=F) ---
+mass            1 40.078        # Ca
+mass            2 18.998403     # F
+group           mobile type 2   # F- anions (for diffusion)
+
+# Buckingham parameters (eV, Å, eV Å^6)
+# Ca-Ca: Coulomb only
+pair_coeff      1 1  0.0        1.0     0.0
+pair_coeff      1 2  797.42     0.3179  0.0
+pair_coeff      2 2  1127.7     0.2153  15.83
+
+# --- thermo/ensemble ---
+variable        T equal 1000          # set your temperature (K)
+timestep        0.001                 # ps = 1 fs
+velocity        all create ${T} 4928459 mom yes rot yes dist gaussian
+fix             npt all npt temp ${T} ${T} 0.1 iso 0.0 0.0 1.0
+
+# --- analysis: MSD and RDF ---
+compute         msdF mobile msd
+compute         msd_all all msd
+
+# RDF partials: (Ca-Ca, Ca-F, F-F) out to 10 Å, 200 bins
+compute         myrdf all rdf 200 1 1 1 2 2 2
+fix             rdfout all ave/time 100 1 100 c_myrdf[*] file rdf.out mode vector
+
+# MSD time series every 100 steps (F-only and all-atoms)
+fix             msdout all ave/time 100 1 100 c_msdF[4] c_msd_all[4] file msd.out
+
+thermo_style    custom step temp press pe ke etotal
+thermo          100
+
+# Trajectory (with element symbols for viewers)
+dump            d1 all custom 200 traj.lammpstrj id type q x y z
+dump_modify d1 element Ca F
+
+run             10000
+write_data      caf2_postrun.data

@@ -1,0 +1,30 @@
+units           lj
+atom_style      atomic
+dimension       3
+boundary        p p p
+
+# Build a cubic box with a dense LJ fluid (~864 atoms)
+lattice         fcc 0.8442
+region          box block 0 10 0 10 0 10
+create_box      1 box
+create_atoms    1 box
+
+mass            1 1.0
+pair_style      lj/cut 2.5
+pair_coeff      1 1 1.0 1.0 2.5
+
+neighbor        0.3 bin
+neigh_modify    every 1 delay 0 check yes
+
+velocity        all create 1.2 4928459 mom yes rot yes dist gaussian
+
+# Integrator and thermo
+fix             1 all nvt temp 1.0 1.0 1.0
+thermo_style    custom step temp pe ke etotal press density
+thermo          100
+
+# Output: trajectory each 100 steps, in XYZ (easy to view)
+dump            1 all xyz 100 traj.xyz
+dump_modify     1 element Ar
+timestep        0.005
+run             10000
