@@ -1,0 +1,144 @@
+\documentclass{article}
+\usepackage{amsmath}
+
+\begin{document}
+\vspace*{-4cm}
+
+
+\[
+\rho_c = f\,\rho_f + (1-f)\,\rho_m
+\]
+
+\[
+f = \frac{\rho_c - \rho_m}{\rho_f - \rho_m}
+\]
+
+\[
+\delta = \frac{F s \left(3L^2 - 4s^2\right)}{48\,E\,I}
+\]
+
+\[
+I = \frac{w h^3}{12}
+\]
+
+\[
+E_f^{\mathrm{ax}} = \text{Axial fibre modulus}
+\]
+
+\[
+E_1 = \text{Axial composite modulus}
+\]
+
+\[
+E_1 = f E_f^{ax} + (1-f) E_m
+\]
+
+\[
+E_f^{ax} = \frac{E_1 - (1-f)E_m}{f}
+\]
+
+\[
+E_f^{\mathrm{tr}} = \text{Transverse fibre modulus}
+\]
+
+\[
+E_2 = \text{Transverse composite modulus}
+\]
+
+\[
+E_2 = E_m\,\frac{1+\eta f}{1-\eta f}
+\]
+
+\[
+\eta = \frac{\left(\dfrac{E_f^{\mathrm{tr}}}{E_m}\right) - 1}
+           {\left(\dfrac{E_f^{\mathrm{tr}}}{E_m}\right) + 1}
+     = \frac{E_f^{\mathrm{tr}} - E_m}{E_f^{\mathrm{tr}} + E_m}
+\]
+
+\[
+E_f^{\mathrm{tr}}
+= E_m \frac{1+\eta}{1-\eta}
+\]
+
+\vspace{10cm}
+
+\[
+\kappa = 
+\frac{2\sin\!\left[\tan^{-1}\!\left(\frac{\delta}{x}\right)\right]}
+     {\sqrt{x^2+\delta^2}}
+\]
+
+\[
+\Delta \varepsilon = \Delta \alpha \,\Delta T
+\]
+
+\[
+\kappa
+=
+\frac{24\,E_1E_2}{E_1^2 + 14E_1E_2 + E_1^2}\;
+\frac{\Delta\varepsilon}{h}
+\]
+
+\[
+\Delta\alpha
+=
+h\,
+\frac{E_A^2 + 14 E_A E_B + E_B^2}{12\,E_A E_B\,\Delta T}
+\;
+\frac{\sin\!\left[\tan^{-1}\!\left(\dfrac{\delta}{x}\right)\right]}
+     {\sqrt{x^2 + \delta^2}}
+\]
+
+\[
+\alpha_{ax,c}
+=
+\frac{
+\alpha_m(1-f)E_m
++
+\alpha_f^{ax} f E_f^{ax}
+}{
+(1-f)E_m + fE_f^{ax}
+}
+\]
+
+\[
+\alpha_{tr,c}
+=
+\alpha_m(1-f)(1+\nu_m)
++
+\alpha_f^{tr} f (1+\nu_f)
+-
+\alpha_{ax,c}\,\nu_{12,c}
+\]
+
+\[
+\nu_{12,c} = f\nu_f + (1-f)\nu_m
+\]
+
+\[
+\alpha_m
+=
+\frac{
+\displaystyle
+\alpha_f^{\mathrm{tr}}\, f(1+\nu_f)
+\;-\;
+\Delta\alpha
+\;-\;
+\frac{
+(1+\nu_{12,c})\,\alpha_f^{\mathrm{ax}}\, f\, E_f^{\mathrm{ax}}
+}{
+(1-f)E_m + fE_f^{\mathrm{ax}}
+}
+}{
+\displaystyle
+\frac{
+(1+\nu_{12,c})(1-f)E_m
+}{
+(1-f)E_m + fE_f^{\mathrm{ax}}
+}
+\;-\;
+(1-f)(1+\nu_m)
+}
+\]
+
+\end{document}
