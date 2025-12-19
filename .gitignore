@@ -2,14 +2,12 @@
 Cloned_C1/
 AlloyDesign/CALPHAD_Analysis/
 AlloyDesign/Miscellaneous/
-dl-poly/
-MD_runs/
-MD_template/
 Formal_Report/
 Literature_Review/
 Materials_Manufacturing_Project/
-Materials_Manufacturing_Project/Raw_SEM_Data/
 AI_Configs/
+Manim_Attempt/
+Course_Revision/
 
 # Ignore specific Jupyter Notebook files
 Alloy_Design/Alloy Design Proposal.pdf
