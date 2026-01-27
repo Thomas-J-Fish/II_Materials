@@ -2,18 +2,22 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Optional
 
 from .motor import MotorController
+from .hx711 import HX711, HX711Config
+
+
+@dataclass
+class ForceCal:
+    tare_offset_counts: float = 0.0
+    scale_N_per_count: float = 1.0  # you will calibrate this!
 
 
 class Sensors:
     """
-    Sensor abstraction.
-
-    Default is simulation mode: force is computed as F = k * x where
-    x is the motor's displacement. Replace TODO sections with real ADC /
-    sensor reads.
+    Reads displacement (from motor model) + force (from HX711 or simulation).
     """
 
     def __init__(
@@ -21,45 +25,46 @@ class Sensors:
         motor: MotorController,
         simulation: bool = True,
         spring_k_N_per_m: float = 100.0,
+        hx711_cfg: Optional[HX711Config] = None,
+        cal: Optional[ForceCal] = None,
+        avg_samples: int = 10,
     ) -> None:
-        """
-        :param motor: MotorController instance used to get displacement.
-        :param simulation: if True, use a simple linear spring model.
-        :param spring_k_N_per_m: spring constant used in the simulation.
-        """
         self.motor = motor
         self.simulation = simulation
         self.spring_k = spring_k_N_per_m
 
+        self.avg_samples = avg_samples
+        self.cal = cal or ForceCal()
+
+        self.hx: Optional[HX711] = None
         if not self.simulation:
-            # TODO: set up ADC / load cell amplifier (e.g. HX711) here.
-            # For example:
-            #   self.hx = HX711(dout_pin, sck_pin)
-            #   self.hx.set_scale(calibration_factor)
-            #   self.hx.tare()
-            raise NotImplementedError(
-                "Real sensor reading not implemented yet. "
-                "Set simulation=True for software testing."
-            )
+            self.hx = HX711(hx711_cfg or HX711Config(dout_pin=6, sck_pin=5, gain=128))
 
-    def read_displacement_m(self) -> float:
+    def close(self) -> None:
+        if self.hx is not None:
+            self.hx.close()
+
+    def tare(self, samples: int = 25) -> None:
         """
-        Return the current displacement [m].
-
-        In this design we take displacement from the motor position.
-        If you have a separate displacement sensor, change this.
-        """
-        return self.motor.get_displacement_m()
-
-    def read_force_N(self) -> float:
-        """
-        Return the current force [N] on the spring.
-
-        Simulation: F = k * x. Real: read ADC and convert using calibration.
+        Set tare offset based on current (no-load) reading.
+        Call this with nothing on the load cell.
         """
         if self.simulation:
+            self.cal.tare_offset_counts = 0.0
+            return
+        assert self.hx is not None
+        self.cal.tare_offset_counts = float(self.hx.read_average(samples=samples))
+
+    def read_displacement_m(self) -> float:
+        # Displacement from the motor model/feedback
+        return float(self.motor.get_displacement_m())
+
+    def read_force_N(self) -> float:
+        if self.simulation:
             x = self.read_displacement_m()
-            return self.spring_k * x
-        else:
-            # TODO: read from ADC and apply calibration.
-            raise NotImplementedError("read_force_N for real hardware not implemented")
+            return float(self.spring_k * x)
+
+        assert self.hx is not None
+        raw = float(self.hx.read_average(samples=self.avg_samples))
+        net = raw - self.cal.tare_offset_counts
+        return float(net * self.cal.scale_N_per_count)
