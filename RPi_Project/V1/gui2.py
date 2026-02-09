@@ -1,11 +1,19 @@
 # gui.py
+# Full file replacement: adds a live Temperature vs Time plot fed by AD8495+MCP3008 over SPI.
+# Requires:
+#   - hardware/thermocouple.py (ThermocoupleAD8495, ThermocoupleConfig)
+#   - hardware/__init__.py exporting ThermocoupleAD8495, ThermocoupleConfig
+#
+# Notes:
+#   - Set VREF below to match your MCP3008 VREF wiring (3.3 or 5.0).
+#   - This temperature stream runs continuously and plots live, independent of the loading cycle.
 
 from __future__ import annotations
 
 import os
 os.environ["MPLBACKEND"] = "TkAgg"
-import time
 
+import time
 import threading
 import queue
 import tkinter as tk
@@ -22,7 +30,8 @@ from hardware import MotorController, Sensors, ThermocoupleAD8495, ThermocoupleC
 from acquisition import run_loading_cycle
 
 
-DataPoint = Tuple[float, float, float]  # (t, disp, force)
+DataPoint = Tuple[float, float, float]      # (t, disp, force)
+TempPoint = Tuple[float, float]             # (t, temp_C)
 
 
 class SpringLoaderApp(tk.Tk):
@@ -30,21 +39,44 @@ class SpringLoaderApp(tk.Tk):
         super().__init__()
 
         self.title("Automatic Spring Loader")
-        self.geometry("1300x750")
+        self.geometry("1300x780")
 
         # ---- Hardware (simulation by default) ----
         self.motor = MotorController(simulation=True)
         self.sensors = Sensors(self.motor, simulation=True)
+
+        # ---- Thermocouple hardware (AD8495 + MCP3008 over SPI) ----
+        # IMPORTANT: set vref to match MCP3008 VREF pin wiring.
+        # If MCP3008 VREF/VDD are on 3.3V -> vref=3.3
+        # If MCP3008 VREF/VDD are on 5V   -> vref=5.0
+        self.tc_cfg = ThermocoupleConfig(
+            spi_bus=0,
+            spi_dev=0,          # CE0
+            channel=0,          # MCP3008 CH0
+            vref=3.3,
+            avg_samples=10,
+            max_speed_hz=1350000
+        )
+        self.tc = ThermocoupleAD8495(self.tc_cfg)
 
         # ---- Experiment control ----
         self.stop_event = threading.Event()
         self.experiment_running = False
         self.data_queue: "queue.Queue[DataPoint]" = queue.Queue()
 
+        # ---- Temperature streaming control ----
+        self.temp_queue: "queue.Queue[TempPoint]" = queue.Queue()
+        self.temp_running = True
+        self.temp_t0 = time.monotonic()
+
         # ---- Data storage (current run only) ----
         self.time_data: List[float] = []
         self.disp_data: List[float] = []
         self.force_data: List[float] = []
+
+        # ---- Temperature storage (continuous) ----
+        self.temp_time: List[float] = []
+        self.temp_data: List[float] = []
 
         # ---- Zero offsets for plotting ----
         self.t0: Optional[float] = None
@@ -73,7 +105,11 @@ class SpringLoaderApp(tk.Tk):
         self._build_plots()
         self.apply_units_to_si()  # sync SI label at startup
 
+        # start background temperature reader thread
+        threading.Thread(target=self._temperature_worker, daemon=True).start()
+
         self.after(50, self._update_plot_from_queue)
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     # ------------------------------------------------------------------
     # GUI construction
@@ -152,7 +188,8 @@ class SpringLoaderApp(tk.Tk):
 
         ttk.Label(
             control,
-            text="Note: Stress–strain requires A and L0.\nOverlays apply only to stress–strain.",
+            text="Note: Stress–strain requires A and L0.\nOverlays apply only to stress–strain.\n"
+                 "Temperature plot runs continuously.",
             foreground="gray"
         ).pack(fill=tk.X, pady=(8, 0))
 
@@ -162,14 +199,16 @@ class SpringLoaderApp(tk.Tk):
 
         self.fig = Figure(figsize=(10, 7), dpi=100, constrained_layout=True)
 
-        # Grid: 2x2, right col spans rows
-        gs = self.fig.add_gridspec(2, 2, width_ratios=[1.0, 1.8], height_ratios=[1.0, 1.0])
+        # Grid: 3x2, right col spans all rows
+        gs = self.fig.add_gridspec(3, 2, width_ratios=[1.0, 1.8], height_ratios=[1.0, 1.0, 1.0])
         self.ax_xt = self.fig.add_subplot(gs[0, 0])
         self.ax_Ft = self.fig.add_subplot(gs[1, 0])
+        self.ax_Tt = self.fig.add_subplot(gs[2, 0])
         self.ax_ss = self.fig.add_subplot(gs[:, 1])
 
         (self.line_xt,) = self.ax_xt.plot([], [], "b-", linewidth=1.5)
         (self.line_Ft,) = self.ax_Ft.plot([], [], "r-", linewidth=1.5)
+        (self.line_Tt,) = self.ax_Tt.plot([], [], "g-", linewidth=1.5)
         (self.line_ss,) = self.ax_ss.plot([], [], "k-", linewidth=1.5)
 
         self._format_axes()
@@ -186,6 +225,10 @@ class SpringLoaderApp(tk.Tk):
         self.ax_Ft.set_title("Force / torque proxy vs time")
         self.ax_Ft.set_xlabel("t [s]")
         self.ax_Ft.set_ylabel("F [N]")
+
+        self.ax_Tt.set_title("Temperature vs time")
+        self.ax_Tt.set_xlabel("t [s]")
+        self.ax_Tt.set_ylabel("T [°C]")
 
         self.ax_ss.set_title("Stress–strain")
         self.ax_ss.set_xlabel("strain ε [-]")
@@ -364,7 +407,6 @@ class SpringLoaderApp(tk.Tk):
             dwell_s = float(self.dwell_var.get())
 
             # Placeholder: rotation rate proxy is not used yet by acquisition/motor.
-            # Later: map this to motor config (pwm_value or moving_speed).
             _rate = int(self.rate_var.get())
             _ = _rate  # keep lint quiet
 
@@ -394,11 +436,28 @@ class SpringLoaderApp(tk.Tk):
             self.status_var.set("Stopped" if self.stop_event.is_set() else "Idle")
 
     # ------------------------------------------------------------------
+    # Temperature stream thread
+    # ------------------------------------------------------------------
+    def _temperature_worker(self) -> None:
+        """Continuously read thermocouple temperature and push to queue."""
+        while self.temp_running:
+            try:
+                T = float(self.tc.read_temp_c())
+                t = time.monotonic() - self.temp_t0
+                self.temp_queue.put((t, T))
+            except Exception:
+                # Avoid killing the GUI if a read fails briefly
+                pass
+            time.sleep(0.2)
+
+    # ------------------------------------------------------------------
     # GUI thread plot updates
     # ------------------------------------------------------------------
     def _update_plot_from_queue(self) -> None:
         updated = False
+        temp_updated = False
 
+        # Drain experiment datapoints
         try:
             while True:
                 t, disp, force = self.data_queue.get_nowait()
@@ -415,6 +474,16 @@ class SpringLoaderApp(tk.Tk):
         except queue.Empty:
             pass
 
+        # Drain temperature datapoints
+        try:
+            while True:
+                tt, T = self.temp_queue.get_nowait()
+                self.temp_time.append(float(tt))
+                self.temp_data.append(float(T))
+                temp_updated = True
+        except queue.Empty:
+            pass
+
         if updated:
             # Time series
             self.line_xt.set_data(self.time_data, self.disp_data)
@@ -424,10 +493,13 @@ class SpringLoaderApp(tk.Tk):
             strain, stress = self._compute_stress_strain()
             self.line_ss.set_data(strain, stress)
 
-            for ax in (self.ax_xt, self.ax_Ft, self.ax_ss):
+        if temp_updated:
+            self.line_Tt.set_data(self.temp_time, self.temp_data)
+
+        if updated or temp_updated:
+            for ax in (self.ax_xt, self.ax_Ft, self.ax_Tt, self.ax_ss):
                 ax.relim()
                 ax.autoscale_view()
-
             self.canvas.draw_idle()
 
         self.after(50, self._update_plot_from_queue)
@@ -436,7 +508,7 @@ class SpringLoaderApp(tk.Tk):
     # Saving / exporting
     # ------------------------------------------------------------------
     def save_csv(self) -> None:
-        if not self.time_data:
+        if not self.time_data and not self.temp_time:
             self.status_var.set("No data to save")
             return
 
@@ -453,11 +525,19 @@ class SpringLoaderApp(tk.Tk):
         try:
             with open(filename, "w", newline="") as f:
                 w = csv.writer(f)
+                # Save mechanical run data (if any)
                 w.writerow(["t [s]", "displacement [m]", "force [N]", "strain [-]", "stress [Pa]"])
                 for i in range(len(self.time_data)):
                     eps = strain[i] if i < len(strain) else ""
                     sig = stress[i] if i < len(stress) else ""
                     w.writerow([self.time_data[i], self.disp_data[i], self.force_data[i], eps, sig])
+
+                # Blank line + temperature data section
+                w.writerow([])
+                w.writerow(["Temperature stream"])
+                w.writerow(["t [s]", "T [°C]"])
+                for i in range(len(self.temp_time)):
+                    w.writerow([self.temp_time[i], self.temp_data[i]])
 
             self.status_var.set(f"Saved CSV: {os.path.basename(filename)}")
         except Exception as e:
@@ -480,8 +560,11 @@ class SpringLoaderApp(tk.Tk):
     def export_summary(self) -> None:
         summary = self._compute_summary()
         if summary is None:
-            messagebox.showinfo("Summary", "Not enough valid stress–strain data to compute summary.\n"
-                                          "Check A/L0 and collect more points.")
+            messagebox.showinfo(
+                "Summary",
+                "Not enough valid stress–strain data to compute summary.\n"
+                "Check A/L0 and collect more points."
+            )
             return
 
         filename = filedialog.asksaveasfilename(
@@ -509,6 +592,25 @@ class SpringLoaderApp(tk.Tk):
             self.status_var.set(f"Saved summary: {os.path.basename(filename)}")
         except Exception as e:
             messagebox.showerror("Save failed", str(e))
+
+    # ------------------------------------------------------------------
+    # Shutdown
+    # ------------------------------------------------------------------
+    def _on_close(self) -> None:
+        self.stop_event.set()
+        self.temp_running = False
+
+        try:
+            self.tc.close()
+        except Exception:
+            pass
+
+        try:
+            self.sensors.close()
+        except Exception:
+            pass
+
+        self.destroy()
 
 
 if __name__ == "__main__":

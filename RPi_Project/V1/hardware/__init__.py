@@ -2,5 +2,6 @@
 
 from .motor import MotorController
 from .sensors import Sensors
+from .thermocouple import ThermocoupleAD8495, ThermocoupleConfig
 
 __all__ = ["MotorController", "Sensors"]
