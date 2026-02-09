@@ -1,15 +1,17 @@
-# gui2.py
-# Modernised Tkinter UI using ttkbootstrap + styled matplotlib + live thermocouple plot.
+# gui4.py
+# Modernised GUI using ttkbootstrap + styled matplotlib.
 # - Fullscreen instrument mode by default (press Esc to exit fullscreen)
 # - Touch-friendly spacing
 # - Clean dark theme, modern button styles
+# - Live temperature plot (real thermocouple on Pi; simulated temp on laptop)
 #
-# Requires:
-#   pip install ttkbootstrap matplotlib spidev RPi.GPIO
+# Laptop install:
+#   pip install -r requirements.txt
+#
+# Pi install:
+#   pip install -r requirements.txt
+#   pip install -r requirements-pi.txt   (spidev, RPi.GPIO)  [recommended]
 #   sudo apt install python3-tk
-#
-# Thermocouple requires:
-#   hardware/thermocouple.py and exports in hardware/__init__.py
 
 from __future__ import annotations
 
@@ -20,6 +22,7 @@ import time
 import threading
 import queue
 import csv
+import math
 from typing import List, Optional, Tuple
 
 import ttkbootstrap as tb
@@ -30,17 +33,21 @@ matplotlib.use("TkAgg")
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
+from matplotlib.collections import LineCollection
+from matplotlib import colors
+import numpy as np
 
 from hardware import MotorController, Sensors
 from acquisition import run_loading_cycle
 
+# Optional thermocouple import (Pi only)
 try:
-    from hardware import ThermocoupleAD8495, ThermocoupleConfig
+    from hardware.thermocouple import ThermocoupleAD8495, ThermocoupleConfig
     THERMOCOUPLE_AVAILABLE = True
-except Exception:
+except ModuleNotFoundError:
+    ThermocoupleAD8495 = None  # type: ignore
+    ThermocoupleConfig = None  # type: ignore
     THERMOCOUPLE_AVAILABLE = False
-
-
 
 DataPoint = Tuple[float, float, float]  # (t, disp, force)
 TempPoint = Tuple[float, float]         # (t, temp_C)
@@ -48,12 +55,12 @@ TempPoint = Tuple[float, float]         # (t, temp_C)
 
 class SpringLoaderApp(tb.Window):
     def __init__(self) -> None:
-        super().__init__(themename="darkly")
+        super().__init__(themename="vapor")
 
         self.title("Automatic Spring Loader")
         self.geometry("1300x780")
 
-        # Fullscreen "instrument mode" (Esc to exit)
+        # Fullscreen "instrument mode" (Esc to exit fullscreen)
         self.attributes("-fullscreen", True)
         self.bind("<Escape>", lambda e: self.attributes("-fullscreen", False))
 
@@ -63,25 +70,6 @@ class SpringLoaderApp(tb.Window):
         # ---- Hardware (simulation by default) ----
         self.motor = MotorController(simulation=True)
         self.sensors = Sensors(self.motor, simulation=True)
-
-        # ---- Thermocouple (AD8495 + MCP3008) ----
-        # IMPORTANT: set vref to match MCP3008 VREF pin wiring (3.3 or 5.0).
-        self.tc_cfg = ThermocoupleConfig(
-            spi_bus=0,
-            spi_dev=0,      # CE0
-            channel=0,      # CH0
-            vref=3.3,       # <-- CHANGE TO 5.0 IF MCP3008 VREF IS 5V
-            avg_samples=10,
-            max_speed_hz=1350000,
-        )
-        self.tc = None
-        if THERMOCOUPLE_AVAILABLE:
-            self.tc_cfg = ThermocoupleConfig(...)
-            self.tc = ThermocoupleAD8495(self.tc_cfg)
-        else:
-            # laptop fallback
-            self.tc_cfg = None
-
 
         # ---- Experiment control ----
         self.stop_event = threading.Event()
@@ -101,6 +89,12 @@ class SpringLoaderApp(tb.Window):
         # ---- Temperature storage (continuous) ----
         self.temp_time: List[float] = []
         self.temp_data: List[float] = []
+
+        # ---- Temperature colour mapping (for colour-coded line) ----
+        from matplotlib import colors
+        self.temp_cmap = plt.get_cmap("coolwarm")   # blue → red
+        self.temp_norm = colors.Normalize(vmin=0, vmax=100)  # adjust range if needed
+
 
         # ---- Zero offsets for plotting ----
         self.t0: Optional[float] = None
@@ -124,15 +118,34 @@ class SpringLoaderApp(tb.Window):
         # ---- Overlay storage (stress–strain only) ----
         self.previous_ss_lines = []
 
+        # ---- Thermocouple (optional) ----
+        self.tc = None
+        self.tc_cfg = None
+        if THERMOCOUPLE_AVAILABLE:
+            # IMPORTANT: set vref to match MCP3008 VREF pin wiring (3.3 or 5.0).
+            self.tc_cfg = ThermocoupleConfig(
+                spi_bus=0,
+                spi_dev=0,      # CE0
+                channel=0,      # CH0
+                vref=3.3,       # <-- CHANGE TO 5.0 IF MCP3008 VREF IS 5V
+                avg_samples=10,
+                max_speed_hz=1350000,
+            )
+            try:
+                self.tc = ThermocoupleAD8495(self.tc_cfg)
+            except Exception:
+                # If SPI isn't available / permission issue, fall back to simulation
+                self.tc = None
+
         # ---- Layout ----
         self._build_controls()
         self._build_plots()
         self.apply_units_to_si()
 
-        # Start background temperature reader thread
+        # Start background temperature reader thread (real or simulated)
         threading.Thread(target=self._temperature_worker, daemon=True).start()
 
-        self.after(50, self._update_plot_from_queue)
+        self.after(1, self._update_plot_from_queue)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     # ------------------------------------------------------------------
@@ -147,9 +160,11 @@ class SpringLoaderApp(tb.Window):
         # Big live temperature readout
         self.temp_readout_var = tb.StringVar(value="--.-- °C")
         tb.Label(control, text="Live Temperature", font=("Helvetica", 11)).pack(anchor="w")
-        tb.Label(control, textvariable=self.temp_readout_var, font=("Helvetica", 28, "bold")).pack(
-            anchor="w", pady=(0, 12)
-        )
+        tb.Label(
+            control,
+            textvariable=self.temp_readout_var,
+            font=("Helvetica", 28, "bold"),
+        ).pack(anchor="w", pady=(0, 12))
 
         # Start/Stop row
         btn_row = tb.Frame(control)
@@ -161,7 +176,6 @@ class SpringLoaderApp(tb.Window):
         self.stop_button = tb.Button(btn_row, text="Stop", bootstyle=DANGER, command=self.stop_experiment)
         self.stop_button.pack(side=LEFT, fill=X, expand=True, padx=(6, 0))
 
-        # Other actions
         tb.Button(control, text="New run (overlay)", bootstyle=PRIMARY, command=self.new_run_overlay).pack(
             fill=X, pady=6
         )
@@ -179,7 +193,6 @@ class SpringLoaderApp(tb.Window):
 
         tb.Separator(control).pack(fill=X, pady=14)
 
-        # Run parameters
         tb.Label(control, text="Run parameters", font=("Helvetica", 12, "bold")).pack(anchor="w")
 
         self._labeled_entry(control, "Step [deg]", self.step_var)
@@ -189,7 +202,6 @@ class SpringLoaderApp(tb.Window):
 
         tb.Separator(control).pack(fill=X, pady=14)
 
-        # Stress–strain params
         tb.Label(control, text="Stress–strain params", font=("Helvetica", 12, "bold")).pack(anchor="w")
 
         self._labeled_entry(control, "Area A [mm²]", self.area_mm2_var)
@@ -204,15 +216,17 @@ class SpringLoaderApp(tb.Window):
 
         tb.Separator(control).pack(fill=X, pady=14)
 
-        # Status
         self.status_var = tb.StringVar(value="Idle")
         tb.Label(control, textvariable=self.status_var, foreground="#4ea1ff", font=("Helvetica", 11, "bold")).pack(
             fill=X
         )
 
+        tc_msg = "Thermocouple: SPI active" if (self.tc is not None) else "Thermocouple: simulated (non-Pi or SPI unavailable)"
+        tb.Label(control, text=tc_msg, foreground="#9aa0a6").pack(fill=X, pady=(8, 0))
+
         tb.Label(
             control,
-            text="Tip: Esc exits fullscreen.\nTemperature plot runs continuously.",
+            text="Tip: Esc exits fullscreen.",
             foreground="#9aa0a6",
         ).pack(fill=X, pady=(10, 0))
 
@@ -226,20 +240,33 @@ class SpringLoaderApp(tb.Window):
 
         self.fig = Figure(figsize=(10, 7), dpi=100, constrained_layout=True)
 
-        # Layout tuned for landscape touchscreen:
-        # Left column: x-t, F-t, T-t stacked
-        # Right column: stress–strain spanning all rows
         gs = self.fig.add_gridspec(3, 2, width_ratios=[1.1, 1.9], height_ratios=[1.0, 1.0, 1.0])
         self.ax_xt = self.fig.add_subplot(gs[0, 0])
         self.ax_Ft = self.fig.add_subplot(gs[1, 0])
         self.ax_Tt = self.fig.add_subplot(gs[2, 0])
+        self.ax_Tt.add_collection(self.temp_lc)
+        self.temp_cbar = self.fig.colorbar(
+            self.temp_lc,
+            ax=self.ax_Tt,
+            orientation="vertical",
+            pad=0.02
+        )
+        self.temp_cbar.set_label("Temperature [°C]")
+
         self.ax_ss = self.fig.add_subplot(gs[:, 1])
 
-        # Modern colours
         (self.line_xt,) = self.ax_xt.plot([], [], color="#4ea1ff", linewidth=2.0)
         (self.line_Ft,) = self.ax_Ft.plot([], [], color="#ff6b6b", linewidth=2.0)
-        (self.line_Tt,) = self.ax_Tt.plot([], [], color="#51cf66", linewidth=2.0)
         (self.line_ss,) = self.ax_ss.plot([], [], color="#f8f9fa", linewidth=2.3)
+        from matplotlib.collections import LineCollection
+
+        self.temp_lc = LineCollection(
+            [],
+            cmap=self.temp_cmap,
+            norm=self.temp_norm
+        )
+        self.temp_lc.set_linewidth(2.5)
+        self.ax_Tt.add_collection(self.temp_lc)
 
         self._format_axes()
 
@@ -264,17 +291,15 @@ class SpringLoaderApp(tb.Window):
         self.ax_ss.set_xlabel("strain ε [-]")
         self.ax_ss.set_ylabel("stress σ [Pa]")
 
-        # Consistent modern styling
         for ax in (self.ax_xt, self.ax_Ft, self.ax_Tt, self.ax_ss):
             ax.grid(alpha=0.18)
             ax.spines["top"].set_visible(False)
             ax.spines["right"].set_visible(False)
 
     # ------------------------------------------------------------------
-    # Helpers: units + derived curves
+    # Helpers
     # ------------------------------------------------------------------
     def apply_units_to_si(self) -> None:
-        """Convert mm² → m² and mm → m; stores in internal SI vars."""
         try:
             A_mm2 = float(self.area_mm2_var.get())
             L_mm = float(self.gauge_mm_var.get())
@@ -292,7 +317,6 @@ class SpringLoaderApp(tb.Window):
             tb.dialogs.Messagebox.show_error(message=str(e), title="Invalid A/L0")
 
     def _compute_stress_strain(self) -> Tuple[List[float], List[float]]:
-        """ε = x/L0, σ = F/A. Returns empty lists if A/L0 invalid."""
         try:
             A = float(self.area_m2_var.get())
             L0 = float(self.gauge_m_var.get())
@@ -334,8 +358,8 @@ class SpringLoaderApp(tb.Window):
         stiffness = (num / den) if den > 0 else float("nan")
 
         return {
-            "max_stress_Pa": max_stress,
-            "max_strain": max_strain,
+            "max_stress_Pa": max(stress),
+            "max_strain": max(strain),
             "stiffness_Pa": stiffness,
             "linear_region": (eps_lo, eps_hi),
         }
@@ -344,7 +368,6 @@ class SpringLoaderApp(tb.Window):
     # Control actions
     # ------------------------------------------------------------------
     def set_zero(self) -> None:
-        """Zero-references plotted data from the latest available point."""
         if self.time_data:
             self.t0 = self.time_data[-1]
             self.disp0 = self.disp_data[-1]
@@ -362,7 +385,6 @@ class SpringLoaderApp(tb.Window):
         self.status_var.set("Zero set")
 
     def new_run_overlay(self) -> None:
-        """Keep previous stress–strain curve as faint grey, then clear current run."""
         if self.disp_data and self.force_data:
             strain, stress = self._compute_stress_strain()
             if strain and stress:
@@ -373,7 +395,6 @@ class SpringLoaderApp(tb.Window):
         self.status_var.set("Ready for new run (overlay kept)")
 
     def clear_all(self) -> None:
-        """Clear current run and remove overlays."""
         for ln in self.previous_ss_lines:
             try:
                 ln.remove()
@@ -412,8 +433,7 @@ class SpringLoaderApp(tb.Window):
         self.stop_event.clear()
         self.status_var.set("Running...")
 
-        worker = threading.Thread(target=self._acquisition_worker, daemon=True)
-        worker.start()
+        threading.Thread(target=self._acquisition_worker, daemon=True).start()
 
     def stop_experiment(self) -> None:
         self.stop_event.set()
@@ -428,8 +448,7 @@ class SpringLoaderApp(tb.Window):
             step_deg = float(self.step_var.get())
             n_steps_up = int(self.n_steps_var.get())
             dwell_s = float(self.dwell_var.get())
-            _rate = int(self.rate_var.get())
-            _ = _rate
+            _ = int(self.rate_var.get())
 
             for t, disp, force in run_loading_cycle(
                 motor=self.motor,
@@ -455,17 +474,25 @@ class SpringLoaderApp(tb.Window):
             self.status_var.set("Stopped" if self.stop_event.is_set() else "Idle")
 
     # ------------------------------------------------------------------
-    # Temperature stream thread
+    # Temperature stream thread (real if available, else simulated)
     # ------------------------------------------------------------------
     def _temperature_worker(self) -> None:
         while self.temp_running:
             try:
-                T = float(self.tc.read_temp_c())
                 t = time.monotonic() - self.temp_t0
+
+                if self.tc is not None:
+                    T = float(self.tc.read_temp_c())
+                else:
+                    # Laptop/demo mode: stable, nice-looking signal around 25°C
+                    T = 25.0 + 2.0 * math.sin(2.0 * math.pi * (t / 30.0)) + 0.2 * math.sin(2.0 * math.pi * (t / 3.0))
+
                 self.temp_queue.put((t, T))
+
             except Exception:
                 pass
-            time.sleep(0.2)
+
+            time.sleep(0.1)
 
     # ------------------------------------------------------------------
     # GUI thread plot updates
@@ -475,27 +502,22 @@ class SpringLoaderApp(tb.Window):
         temp_updated = False
         latest_T: Optional[float] = None
 
-        # Drain mechanical run datapoints
         try:
             while True:
                 t, disp, force = self.data_queue.get_nowait()
-
-                if t < 0 and (disp != disp or force != force):  # NaN check
+                if t < 0 and (disp != disp or force != force):
                     tb.dialogs.Messagebox.show_error(
                         message=getattr(self, "_error_message", "Unknown error"),
                         title="Acquisition error",
                     )
                     break
-
                 self.time_data.append(float(t))
                 self.disp_data.append(float(disp))
                 self.force_data.append(float(force))
                 updated = True
-
         except queue.Empty:
             pass
 
-        # Drain temperature datapoints
         try:
             while True:
                 tt, T = self.temp_queue.get_nowait()
@@ -512,12 +534,21 @@ class SpringLoaderApp(tb.Window):
         if updated:
             self.line_xt.set_data(self.time_data, self.disp_data)
             self.line_Ft.set_data(self.time_data, self.force_data)
-
             strain, stress = self._compute_stress_strain()
             self.line_ss.set_data(strain, stress)
 
-        if temp_updated:
-            self.line_Tt.set_data(self.temp_time, self.temp_data)
+        if temp_updated and len(self.temp_time) > 1:
+            import numpy as np
+
+            x = np.array(self.temp_time)
+            y = np.array(self.temp_data)
+
+            # Build line segments for colour mapping
+            points = np.array([x, y]).T.reshape(-1, 1, 2)
+            segments = np.concatenate([points[:-1], points[1:]], axis=1)
+
+            self.temp_lc.set_segments(segments)
+            self.temp_lc.set_array(y[:-1])  # colour by temperature
 
         if updated or temp_updated:
             for ax in (self.ax_xt, self.ax_Ft, self.ax_Tt, self.ax_ss):
@@ -619,14 +650,18 @@ class SpringLoaderApp(tb.Window):
     def _on_close(self) -> None:
         self.stop_event.set()
         self.temp_running = False
+
         try:
-            self.tc.close()
+            if self.tc is not None:
+                self.tc.close()
         except Exception:
             pass
+
         try:
             self.sensors.close()
         except Exception:
             pass
+
         self.destroy()
 
 

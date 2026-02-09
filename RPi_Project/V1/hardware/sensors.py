@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 
 from .motor import MotorController
-from .hx711 import HX711, HX711Config
+
+if TYPE_CHECKING:
+    from .hx711 import HX711, HX711Config
+else:
+    HX711 = object          # type: ignore
+    HX711Config = object    # type: ignore
 
 
 @dataclass
@@ -36,8 +41,16 @@ class Sensors:
         self.avg_samples = avg_samples
         self.cal = cal or ForceCal()
 
-        self.hx: Optional[HX711] = None
+        self.hx = None
         if not self.simulation:
+            # Import only when needed (so laptops don't require RPi.GPIO)
+            try:
+                from .hx711 import HX711, HX711Config  # type: ignore
+            except ModuleNotFoundError as e:
+                raise ModuleNotFoundError(
+                    "HX711 requested (simulation=False) but hx711/RPi.GPIO not available on this system."
+                ) from e
+
             self.hx = HX711(hx711_cfg or HX711Config(dout_pin=6, sck_pin=5, gain=128))
 
     def close(self) -> None:
