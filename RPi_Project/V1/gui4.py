@@ -2,16 +2,10 @@
 # Modernised GUI using ttkbootstrap + styled matplotlib.
 # - Fullscreen instrument mode by default (press Esc to exit fullscreen)
 # - Touch-friendly spacing
-# - Clean dark theme, modern button styles
+# - Clean theme, modern button styles
 # - Live temperature plot (real thermocouple on Pi; simulated temp on laptop)
-#
-# Laptop install:
-#   pip install -r requirements.txt
-#
-# Pi install:
-#   pip install -r requirements.txt
-#   pip install -r requirements-pi.txt   (spidev, RPi.GPIO)  [recommended]
-#   sudo apt install python3-tk
+# - Temperature trace is colour-mapped (blue=cool → red=hot)
+# - Rolling 60 s window for temperature axis scaling (instrument-style)
 
 from __future__ import annotations
 
@@ -49,13 +43,14 @@ except ModuleNotFoundError:
     ThermocoupleConfig = None  # type: ignore
     THERMOCOUPLE_AVAILABLE = False
 
+
 DataPoint = Tuple[float, float, float]  # (t, disp, force)
 TempPoint = Tuple[float, float]         # (t, temp_C)
 
 
 class SpringLoaderApp(tb.Window):
     def __init__(self) -> None:
-        super().__init__(themename="vapor")
+        super().__init__(themename="vapor")  # try "darkly" for a more professional look
 
         self.title("Automatic Spring Loader")
         self.geometry("1300x780")
@@ -64,7 +59,7 @@ class SpringLoaderApp(tb.Window):
         self.attributes("-fullscreen", True)
         self.bind("<Escape>", lambda e: self.attributes("-fullscreen", False))
 
-        # --- Matplotlib style (match dark theme) ---
+        # --- Matplotlib style ---
         plt.style.use("dark_background")
 
         # ---- Hardware (simulation by default) ----
@@ -81,6 +76,9 @@ class SpringLoaderApp(tb.Window):
         self.temp_running = True
         self.temp_t0 = time.monotonic()
 
+        # Rolling window (seconds) for temperature plot
+        self.temp_window_s = 60.0
+
         # ---- Data storage (current mechanical run only) ----
         self.time_data: List[float] = []
         self.disp_data: List[float] = []
@@ -91,10 +89,8 @@ class SpringLoaderApp(tb.Window):
         self.temp_data: List[float] = []
 
         # ---- Temperature colour mapping (for colour-coded line) ----
-        from matplotlib import colors
-        self.temp_cmap = plt.get_cmap("coolwarm")   # blue → red
-        self.temp_norm = colors.Normalize(vmin=0, vmax=100)  # adjust range if needed
-
+        self.temp_cmap = plt.get_cmap("coolwarm")               # blue → red
+        self.temp_norm = colors.Normalize(vmin=0, vmax=100)     # fixed colourbar scale (change if desired)
 
         # ---- Zero offsets for plotting ----
         self.t0: Optional[float] = None
@@ -121,8 +117,7 @@ class SpringLoaderApp(tb.Window):
         # ---- Thermocouple (optional) ----
         self.tc = None
         self.tc_cfg = None
-        if THERMOCOUPLE_AVAILABLE:
-            # IMPORTANT: set vref to match MCP3008 VREF pin wiring (3.3 or 5.0).
+        if THERMOCOUPLE_AVAILABLE and ThermocoupleConfig is not None and ThermocoupleAD8495 is not None:
             self.tc_cfg = ThermocoupleConfig(
                 spi_bus=0,
                 spi_dev=0,      # CE0
@@ -134,7 +129,6 @@ class SpringLoaderApp(tb.Window):
             try:
                 self.tc = ThermocoupleAD8495(self.tc_cfg)
             except Exception:
-                # If SPI isn't available / permission issue, fall back to simulation
                 self.tc = None
 
         # ---- Layout ----
@@ -145,7 +139,8 @@ class SpringLoaderApp(tb.Window):
         # Start background temperature reader thread (real or simulated)
         threading.Thread(target=self._temperature_worker, daemon=True).start()
 
-        self.after(1, self._update_plot_from_queue)
+        # GUI update cadence (ms). 50–100 is sensible for Pi.
+        self.after(50, self._update_plot_from_queue)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     # ------------------------------------------------------------------
@@ -176,9 +171,7 @@ class SpringLoaderApp(tb.Window):
         self.stop_button = tb.Button(btn_row, text="Stop", bootstyle=DANGER, command=self.stop_experiment)
         self.stop_button.pack(side=LEFT, fill=X, expand=True, padx=(6, 0))
 
-        tb.Button(control, text="New run (overlay)", bootstyle=PRIMARY, command=self.new_run_overlay).pack(
-            fill=X, pady=6
-        )
+        tb.Button(control, text="New run (overlay)", bootstyle=PRIMARY, command=self.new_run_overlay).pack(fill=X, pady=6)
         tb.Button(control, text="Clear all", bootstyle=SECONDARY, command=self.clear_all).pack(fill=X, pady=6)
 
         tb.Separator(control).pack(fill=X, pady=14)
@@ -187,9 +180,7 @@ class SpringLoaderApp(tb.Window):
 
         tb.Button(control, text="Save CSV", bootstyle=OUTLINE, command=self.save_csv).pack(fill=X, pady=6)
         tb.Button(control, text="Save plots (PNG)", bootstyle=OUTLINE, command=self.save_png).pack(fill=X, pady=6)
-        tb.Button(control, text="Export summary", bootstyle=OUTLINE, command=self.export_summary).pack(
-            fill=X, pady=6
-        )
+        tb.Button(control, text="Export summary", bootstyle=OUTLINE, command=self.export_summary).pack(fill=X, pady=6)
 
         tb.Separator(control).pack(fill=X, pady=14)
 
@@ -207,9 +198,7 @@ class SpringLoaderApp(tb.Window):
         self._labeled_entry(control, "Area A [mm²]", self.area_mm2_var)
         self._labeled_entry(control, "Gauge length L0 [mm]", self.gauge_mm_var)
 
-        tb.Button(control, text="Apply A/L0 (→ SI)", bootstyle=PRIMARY, command=self.apply_units_to_si).pack(
-            fill=X, pady=(8, 6)
-        )
+        tb.Button(control, text="Apply A/L0 (→ SI)", bootstyle=PRIMARY, command=self.apply_units_to_si).pack(fill=X, pady=(8, 6))
 
         self.si_label_var = tb.StringVar(value="")
         tb.Label(control, textvariable=self.si_label_var, foreground="#9aa0a6").pack(fill=X)
@@ -217,18 +206,12 @@ class SpringLoaderApp(tb.Window):
         tb.Separator(control).pack(fill=X, pady=14)
 
         self.status_var = tb.StringVar(value="Idle")
-        tb.Label(control, textvariable=self.status_var, foreground="#4ea1ff", font=("Helvetica", 11, "bold")).pack(
-            fill=X
-        )
+        tb.Label(control, textvariable=self.status_var, foreground="#4ea1ff", font=("Helvetica", 11, "bold")).pack(fill=X)
 
         tc_msg = "Thermocouple: SPI active" if (self.tc is not None) else "Thermocouple: simulated (non-Pi or SPI unavailable)"
         tb.Label(control, text=tc_msg, foreground="#9aa0a6").pack(fill=X, pady=(8, 0))
 
-        tb.Label(
-            control,
-            text="Tip: Esc exits fullscreen.",
-            foreground="#9aa0a6",
-        ).pack(fill=X, pady=(10, 0))
+        tb.Label(control, text="Tip: Esc exits fullscreen.", foreground="#9aa0a6").pack(fill=X, pady=(10, 0))
 
     def _labeled_entry(self, parent: tb.Frame, label: str, var) -> None:
         tb.Label(parent, text=label, font=("Helvetica", 10)).pack(anchor="w", pady=(10, 2))
@@ -244,29 +227,20 @@ class SpringLoaderApp(tb.Window):
         self.ax_xt = self.fig.add_subplot(gs[0, 0])
         self.ax_Ft = self.fig.add_subplot(gs[1, 0])
         self.ax_Tt = self.fig.add_subplot(gs[2, 0])
-        self.ax_Tt.add_collection(self.temp_lc)
-        self.temp_cbar = self.fig.colorbar(
-            self.temp_lc,
-            ax=self.ax_Tt,
-            orientation="vertical",
-            pad=0.02
-        )
-        self.temp_cbar.set_label("Temperature [°C]")
-
         self.ax_ss = self.fig.add_subplot(gs[:, 1])
 
         (self.line_xt,) = self.ax_xt.plot([], [], color="#4ea1ff", linewidth=2.0)
         (self.line_Ft,) = self.ax_Ft.plot([], [], color="#ff6b6b", linewidth=2.0)
         (self.line_ss,) = self.ax_ss.plot([], [], color="#f8f9fa", linewidth=2.3)
-        from matplotlib.collections import LineCollection
 
-        self.temp_lc = LineCollection(
-            [],
-            cmap=self.temp_cmap,
-            norm=self.temp_norm
-        )
+        # Temperature colour-mapped line
+        self.temp_lc = LineCollection([], cmap=self.temp_cmap, norm=self.temp_norm)
         self.temp_lc.set_linewidth(2.5)
         self.ax_Tt.add_collection(self.temp_lc)
+
+        # Colourbar for temperature mapping
+        self.temp_cbar = self.fig.colorbar(self.temp_lc, ax=self.ax_Tt, orientation="vertical", pad=0.02)
+        self.temp_cbar.set_label("Temperature [°C]")
 
         self._format_axes()
 
@@ -334,7 +308,6 @@ class SpringLoaderApp(tb.Window):
         if not strain or not stress or len(strain) < 5:
             return None
 
-        max_stress = max(stress)
         max_strain = max(strain)
         if max_strain <= 0:
             return None
@@ -423,6 +396,10 @@ class SpringLoaderApp(tb.Window):
             ax.relim()
             ax.autoscale_view()
 
+        # Also clear temperature plot visuals (keep colourbar)
+        self.temp_lc.set_segments([])
+        self.temp_lc.set_array(np.array([]))
+
         self.canvas.draw_idle()
 
     def start_experiment(self) -> None:
@@ -485,10 +462,9 @@ class SpringLoaderApp(tb.Window):
                     T = float(self.tc.read_temp_c())
                 else:
                     # Laptop/demo mode: stable, nice-looking signal around 25°C
-                    T = 25.0 + 2.0 * math.sin(2.0 * math.pi * (t / 30.0)) + 0.2 * math.sin(2.0 * math.pi * (t / 3.0))
+                    T = 50.0 + 50.0 * math.sin(2.0 * math.pi * (t / 30.0)) + 5 * math.sin(2.0 * math.pi * (t / 3.0))
 
                 self.temp_queue.put((t, T))
-
             except Exception:
                 pass
 
@@ -502,6 +478,7 @@ class SpringLoaderApp(tb.Window):
         temp_updated = False
         latest_T: Optional[float] = None
 
+        # Drain mechanical data
         try:
             while True:
                 t, disp, force = self.data_queue.get_nowait()
@@ -518,6 +495,7 @@ class SpringLoaderApp(tb.Window):
         except queue.Empty:
             pass
 
+        # Drain temperature data
         try:
             while True:
                 tt, T = self.temp_queue.get_nowait()
@@ -537,23 +515,41 @@ class SpringLoaderApp(tb.Window):
             strain, stress = self._compute_stress_strain()
             self.line_ss.set_data(strain, stress)
 
+        # Update temperature LineCollection + rolling window scaling (60 s)
         if temp_updated and len(self.temp_time) > 1:
-            import numpy as np
+            x_all = np.array(self.temp_time, dtype=float)
+            y_all = np.array(self.temp_data, dtype=float)
 
-            x = np.array(self.temp_time)
-            y = np.array(self.temp_data)
+            # Build coloured line for ALL points (so colour history is preserved)
+            pts = np.column_stack([x_all, y_all]).reshape(-1, 1, 2)
+            segs = np.concatenate([pts[:-1], pts[1:]], axis=1)
+            self.temp_lc.set_segments(segs)
+            self.temp_lc.set_array(y_all[:-1])  # colour by temperature
 
-            # Build line segments for colour mapping
-            points = np.array([x, y]).T.reshape(-1, 1, 2)
-            segments = np.concatenate([points[:-1], points[1:]], axis=1)
+            # Rolling window for axes limits
+            xmax = float(x_all.max())
+            xmin = max(0.0, xmax - self.temp_window_s)
 
-            self.temp_lc.set_segments(segments)
-            self.temp_lc.set_array(y[:-1])  # colour by temperature
+            # Select only points inside the window for y-limits
+            mask = x_all >= xmin
+            y_win = y_all[mask] if np.any(mask) else y_all
+
+            ymin = float(y_win.min())
+            ymax = float(y_win.max())
+
+            # Padding so trace isn't glued to borders
+            ypad = 0.05 * (ymax - ymin) if ymax > ymin else 1.0
+
+            self.ax_Tt.set_xlim(xmin, xmax + 0.5)
+            self.ax_Tt.set_ylim(ymin - ypad, ymax + ypad)
 
         if updated or temp_updated:
-            for ax in (self.ax_xt, self.ax_Ft, self.ax_Tt, self.ax_ss):
+            # These relim/autoscale calls still help other axes
+            for ax in (self.ax_xt, self.ax_Ft, self.ax_ss):
                 ax.relim()
                 ax.autoscale_view()
+
+            # Temperature axis is manually scaled above (rolling window)
             self.canvas.draw_idle()
 
         self.after(50, self._update_plot_from_queue)
