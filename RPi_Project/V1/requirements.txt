@@ -1,1 +1,4 @@
-matplotlib
+matplotlib>=3.7
+ttkbootstrap>=1.10.1
+spidev>=3.8
+RPi.GPIO>=0.7.1

@@ -1,6 +1,7 @@
 # hardware/thermocouple.py
 
 from __future__ import annotations
+import time
 from dataclasses import dataclass
 from typing import Optional
 
@@ -10,19 +11,19 @@ import spidev
 @dataclass
 class ThermocoupleConfig:
     spi_bus: int = 0
-    spi_dev: int = 0          # CE0=0, CE1=1
+    spi_dev: int = 0          # CE0 = 0, CE1 = 1
     channel: int = 0          # MCP3008 CH0..CH7
     vref: float = 3.3         # MUST match MCP3008 VREF wiring (3.3 or 5.0)
     max_speed_hz: int = 1350000
-    avg_samples: int = 10     # smoothing
+    avg_samples: int = 10     # basic smoothing
 
 
 class ThermocoupleAD8495:
     """
-    AD8495 amplifier read via MCP3008.
+    Reads AD8495 amplifier output via MCP3008 and converts to degC.
 
-    AD8495 transfer (approx):
-      Vout = 1.25 V + (5 mV/°C)*T
+    AD8495 transfer:
+      Vout = 1.25 V + 0.005 V/°C * T
       => T = (Vout - 1.25) / 0.005
     """
 
