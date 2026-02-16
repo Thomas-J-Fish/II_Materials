@@ -5,7 +5,7 @@
 # - Clean theme, modern button styles
 # - Live temperature plot (real thermocouple on Pi; simulated temp on laptop)
 # - Temperature trace is colour-mapped (blue=cool → red=hot)
-# - Rolling 60 s window for temperature axis scaling (instrument-style)
+# - Rolling 60 s window for temperature axis scaling (instrument-style) test
 
 from __future__ import annotations
 
