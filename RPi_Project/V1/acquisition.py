@@ -1,5 +1,4 @@
 # acquisition.py
-
 from __future__ import annotations
 
 import time
@@ -11,7 +10,6 @@ DataPoint = Tuple[float, float, float]  # (t [s], displacement [m], force [N])
 
 
 def _safe_read(sensors: Sensors) -> Optional[Tuple[float, float]]:
-    """Return (disp, force) or None if a read fails."""
     try:
         disp = float(sensors.read_displacement_m())
         force = float(sensors.read_force_N())
@@ -29,48 +27,49 @@ def run_loading_cycle(
     dwell_s: float = 0.05,
 ) -> Generator[DataPoint, None, None]:
     """
-    Run a single loading–unloading cycle (one datapoint per step).
+    Run a single loading–unloading cycle.
 
-    :yield: (t, displacement, force) tuples after each move.
+    Key change vs your old version:
+      - After each step command, we stream multiple sensor points for ~dwell_s seconds
+      - This makes the GUI plot look "live" and you can see load/position evolve
     """
     t0 = time.monotonic()
 
-    # Optional initial datapoint (comment out if you truly want ONLY per-step)
-    reading = _safe_read(sensors)
-    if reading is not None:
-        disp, force = reading
-        yield 0.0, disp, force
+    def stream_for(duration_s: float) -> Generator[DataPoint, None, None]:
+        t_end = time.monotonic() + max(0.0, duration_s)
+        while time.monotonic() < t_end:
+            if stop_flag.is_set():
+                return
+            reading = _safe_read(sensors)
+            if reading is not None:
+                disp, force = reading
+                yield (time.monotonic() - t0), disp, force
+            time.sleep(0.02)  # ~50 Hz like your telemetry stream
+
+    # initial baseline stream
+    yield from stream_for(0.2)
 
     # Loading
     for _ in range(n_steps_up):
         if stop_flag.is_set():
-            return
+            break
 
         motor.step_deg(step_deg)
 
-        if dwell_s > 0:
-            time.sleep(dwell_s)
-
-        reading = _safe_read(sensors)
-        if reading is None:
-            continue
-        disp, force = reading
-        t = time.monotonic() - t0
-        yield t, disp, force
+        # stream during/after move
+        yield from stream_for(max(dwell_s, 0.1))
 
     # Unloading
     for _ in range(n_steps_up):
         if stop_flag.is_set():
-            return
+            break
 
         motor.step_deg(-step_deg)
 
-        if dwell_s > 0:
-            time.sleep(dwell_s)
+        yield from stream_for(max(dwell_s, 0.1))
 
-        reading = _safe_read(sensors)
-        if reading is None:
-            continue
-        disp, force = reading
-        t = time.monotonic() - t0
-        yield t, disp, force
+    # Stop at the end (matches your working method)
+    try:
+        motor.stop()
+    except Exception:
+        pass

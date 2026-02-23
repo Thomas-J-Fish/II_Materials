@@ -63,8 +63,10 @@ class SpringLoaderApp(tb.Window):
         plt.style.use("dark_background")
 
         # ---- Hardware (simulation by default) ----
-        self.motor = MotorController(simulation=True)
-        self.sensors = Sensors(self.motor, simulation=True)
+        SIM = True
+
+        self.motor = MotorController(simulation=SIM)
+        self.sensors = Sensors(self.motor, simulation=SIM)
 
         # ---- Experiment control ----
         self.stop_event = threading.Event()

@@ -1,5 +1,4 @@
 # hardware/motor.py
-
 from __future__ import annotations
 
 import time
@@ -7,225 +6,323 @@ import math
 from dataclasses import dataclass
 from typing import Optional
 
+import serial
+
 
 @dataclass
 class ServoConfig:
-    device_name: str = "/dev/ttyUSB0"      # Pi: "/dev/ttyUSB0" or "/dev/serial/by-id/..."
-    baudrate: int = 1_000_000
+    device_name: str = "/dev/ttyUSB0"
+    baudrate: int = 115200
     servo_id: int = 1
 
-    # PWM control for multi-turn
-    pwm_value: int = 500                   # magnitude; sign gives direction
-    poll_s: float = 0.02                   # feedback polling interval
-    move_timeout_s: float = 10.0           # safety timeout per step
-
     # Geometry
-    radius_m: float = 0.02                 # drum/pulley radius [m]
+    radius_m: float = 0.02  # drum/pulley radius [m]
+
+    # Position model: assume 12-bit position (0..4095) per revolution
+    units_per_rev: int = 4096
+    pos_mask: int = 0x0FFF  # keep low 12 bits
+
+    # Registers (SCSCL-like)
+    TORQUE_ENABLE: int = 40        # 0x28
+    GOAL_POSITION_L: int = 0x2A    # 42
+    PRESENT_POSITION_L: int = 0x38 # 56
+    PRESENT_LOAD_L: int = 0x3C     # 60
+
+    # Motion settings
+    move_time_ms: int = 1000
+    speed: int = 800
+
+    # Polling
+    poll_s: float = 0.02
 
 
 class MotorController:
     """
-    Multi-turn control using PWM mode + position feedback.
+    SIMPLE SCServo controller using raw packets over pyserial.
 
-    Strategy:
-      - Put servo into PWMMode.
-      - Use WritePWM to rotate continuously.
-      - Use ReadPosSpeed feedback to track position.
-      - Unwrap modulo-4096 position to accumulate turns.
-      - Implement step_deg(delta) by rotating until target delta is reached.
+    Exposes the API your GUI already expects:
+      - step_deg(delta)
+      - get_displacement_m()
+      - go_home()
+      - close()
 
-    simulation=True uses a simple software model.
+    Plus extra useful reads:
+      - read_pos_units() (0..4095 masked)
+      - read_load_raw()  (0..65535 raw "load/torque proxy")
     """
+
+    INST_READ = 0x02
+    INST_WRITE = 0x03
 
     def __init__(self, simulation: bool = True, config: Optional[ServoConfig] = None):
         self.simulation = simulation
         self.config = config or ServoConfig()
 
-        # Feedback tracking (unwrapped)
-        self._last_pos_units: Optional[int] = None
-        self._turns: int = 0                # number of full wraps (+/-)
-        self.total_pos_units: int = 0       # unwrapped in "units" (can exceed 0..4095)
+        self._ser: Optional[serial.Serial] = None
 
-        # Derived state for convenience
+        # State tracking
+        self._pos_units_sim: int = 0
+        self._pos_units_last: Optional[int] = None
+        self._turns: int = 0
+        self.total_pos_units: int = 0
         self.total_angle_deg: float = 0.0
 
-        # Real hardware handles/constants
-        self._portHandler = None
-        self._packetHandler = None
-        self._COMM_SUCCESS = None
-
         if not self.simulation:
-            self._init_real()
+            self._ser = serial.Serial(self.config.device_name, self.config.baudrate, timeout=0.05)
+            time.sleep(0.15)
+            # Ensure torque enabled so it can move + report load
+            self.torque_enable(True)
 
-    # ---------------- Real hardware setup ----------------
-    def _init_real(self) -> None:
-        from scservo_sdk import PortHandler, scscl, COMM_SUCCESS  # type: ignore
+            # Seed position tracking
+            p = self.read_pos_units()
+            if p is not None:
+                self._seed_unwrap(p)
 
-        self._COMM_SUCCESS = COMM_SUCCESS
-        self._portHandler = PortHandler(self.config.device_name)
-        self._packetHandler = scscl(self._portHandler)
+    # ---------------- Packet helpers ----------------
+    @staticmethod
+    def _checksum(sid: int, length: int, inst_or_err: int, params: list[int]) -> int:
+        return (~(sid + length + inst_or_err + sum(params))) & 0xFF
 
-        if not self._portHandler.openPort():
-            raise RuntimeError(f"Failed to open port: {self.config.device_name}")
-        if not self._portHandler.setBaudRate(self.config.baudrate):
-            raise RuntimeError(f"Failed to set baudrate: {self.config.baudrate}")
+    @classmethod
+    def _packet(cls, sid: int, inst: int, params: list[int]) -> bytes:
+        length = 2 + len(params)
+        chk = cls._checksum(sid, length, inst, params)
+        return bytes([0xFF, 0xFF, sid, length, inst] + params + [chk])
 
-        # Put servo into PWM mode (from wheel.py)
-        comm, err = self._packetHandler.PWMMode(self.config.servo_id)
-        if comm != self._COMM_SUCCESS:
-            raise RuntimeError(self._packetHandler.getTxRxResult(comm))
-        if err != 0:
-            raise RuntimeError(self._packetHandler.getRxPacketError(err))
+    def _read_status_packet(self, timeout_s: float = 0.05):
+        """
+        Read one status packet:
+          FF FF ID LEN ERR PARAMS... CHK
+        Return (sid, err, params_bytes) or None.
+        """
+        if self._ser is None:
+            return None
 
-        # Seed position tracking
-        pos = self.read_pos_units()
-        if pos is not None:
-            self._last_pos_units = pos
-            self._turns = 0
-            self._update_unwrapped(pos)
+        deadline = time.time() + timeout_s
 
-    def close(self) -> None:
-        if not self.simulation and self._portHandler is not None:
-            self.stop()
-            self._portHandler.closePort()
+        # Find header
+        while time.time() < deadline:
+            b = self._ser.read(1)
+            if not b or b[0] != 0xFF:
+                continue
+            b2 = self._ser.read(1)
+            if not b2 or b2[0] != 0xFF:
+                continue
 
-    # ---------------- Low-level servo I/O ----------------
-    def set_pwm(self, pwm: int) -> None:
-        """pwm sign controls direction; pwm=0 stops."""
+            sid_b = self._ser.read(1)
+            length_b = self._ser.read(1)
+            err_b = self._ser.read(1)
+            if len(sid_b) < 1 or len(length_b) < 1 or len(err_b) < 1:
+                continue
+
+            sid = sid_b[0]
+            length = length_b[0]
+            err = err_b[0]
+
+            params_len = max(0, length - 2)
+            params = self._ser.read(params_len) if params_len else b""
+            chk_b = self._ser.read(1)
+            if len(params) != params_len or len(chk_b) != 1:
+                continue
+
+            chk = chk_b[0]
+            calc = self._checksum(sid, length, err, list(params))
+            if chk != calc:
+                continue
+
+            return sid, err, params
+
+        return None
+
+    def _read_regs(self, start_addr: int, nbytes: int) -> Optional[bytes]:
+        if self._ser is None:
+            return None
+        # Clear stale bytes to avoid old responses confusing us
+        try:
+            self._ser.reset_input_buffer()
+        except Exception:
+            pass
+
+        self._ser.write(self._packet(self.config.servo_id, self.INST_READ, [start_addr, nbytes]))
+        self._ser.flush()
+
+        resp = self._read_status_packet(timeout_s=0.05)
+        if resp is None:
+            return None
+        sid, err, params = resp
+        if sid != self.config.servo_id or err != 0 or len(params) < nbytes:
+            return None
+        return params[:nbytes]
+
+    def _write_bytes(self, params: list[int]) -> None:
+        if self._ser is None:
+            return
+        self._ser.write(self._packet(self.config.servo_id, self.INST_WRITE, params))
+        self._ser.flush()
+
+    @staticmethod
+    def _u16(lo: int, hi: int) -> int:
+        return (lo & 0xFF) | ((hi & 0xFF) << 8)
+
+    # ---------------- Torque / move ----------------
+    def torque_enable(self, enable: bool) -> None:
         if self.simulation:
             return
+        self._write_bytes([self.config.TORQUE_ENABLE, 1 if enable else 0])
 
-        if self._packetHandler is None or self._COMM_SUCCESS is None:
-            raise RuntimeError("Motor not initialised")
+    def move_to_units(self, pos_units: int) -> None:
+        """
+        Command a goal position (units are 0..4095 typically).
+        """
+        if self.simulation:
+            self._pos_units_sim = int(pos_units) & self.config.pos_mask
+            self._update_unwrapped(self._pos_units_sim)
+            return
 
-        comm, err = self._packetHandler.WritePWM(self.config.servo_id, int(pwm))
-        if comm != self._COMM_SUCCESS:
-            raise RuntimeError(self._packetHandler.getTxRxResult(comm))
-        if err != 0:
-            raise RuntimeError(self._packetHandler.getRxPacketError(err))
+        pos_units = int(pos_units) & 0xFFFF
+        params = [
+            self.config.GOAL_POSITION_L,
+            pos_units & 0xFF, (pos_units >> 8) & 0xFF,
+            self.config.move_time_ms & 0xFF, (self.config.move_time_ms >> 8) & 0xFF,
+            self.config.speed & 0xFF, (self.config.speed >> 8) & 0xFF,
+        ]
+        self._write_bytes(params)
 
     def stop(self) -> None:
-        self.set_pwm(0)
+        """
+        Your proven "stop" method is torque disable.
+        """
+        self.torque_enable(False)
 
+    # ---------------- Reads ----------------
     def read_pos_units(self) -> Optional[int]:
         """
-        Read current position in 0..4095 units via ReadPosSpeed.
-        Assumes this works sensibly in PWMMode (your stated assumption).
+        Read present position and mask to low 12 bits (0..4095).
         """
         if self.simulation:
-            # simulate modulo position from total_angle_deg
-            pos = int(round(((self.total_angle_deg % 360.0) / 360.0) * 4095.0))
-            return max(0, min(4095, pos))
+            return self._pos_units_sim & self.config.pos_mask
 
-        if self._packetHandler is None or self._COMM_SUCCESS is None:
+        data = self._read_regs(self.config.PRESENT_POSITION_L, 2)
+        if data is None or len(data) < 2:
             return None
+        raw = self._u16(data[0], data[1])
+        return raw & self.config.pos_mask
 
-        if not hasattr(self._packetHandler, "ReadPosSpeed"):
+    def read_load_raw(self) -> Optional[int]:
+        """
+        Read present load (torque proxy). This is usually NOT calibrated.
+        """
+        if self.simulation:
+            return 0
+
+        data = self._read_regs(self.config.PRESENT_LOAD_L, 2)
+        if data is None or len(data) < 2:
             return None
+        return self._u16(data[0], data[1])
 
-        pos, speed, comm, err = self._packetHandler.ReadPosSpeed(self.config.servo_id)
-        if comm != self._COMM_SUCCESS or err != 0:
-            return None
-        return int(pos)
+    # ---------------- Unwrap + displacement ----------------
+    def _seed_unwrap(self, pos_units: int) -> None:
+        self._pos_units_last = pos_units
+        self._turns = 0
+        self._update_unwrapped(pos_units)
 
-    # ---------------- Unwrapping logic ----------------
     def _update_unwrapped(self, pos_units: int) -> None:
         """
-        Convert modulo 0..4095 to unwrapped multi-turn units by detecting wrap.
+        Unwrap modulo position into multi-turn units (very simple).
         """
-        if self._last_pos_units is None:
-            self._last_pos_units = pos_units
+        if self._pos_units_last is None:
+            self._pos_units_last = pos_units
             self._turns = 0
         else:
-            delta = pos_units - self._last_pos_units
-
-            # If it jumps a lot, assume wrap-around happened.
-            # Threshold 2048 = half turn; robust against noise.
-            if delta > 2048:
-                # e.g. went from ~0 to ~4095 (wrapped backwards)
+            delta = pos_units - self._pos_units_last
+            half = self.config.units_per_rev // 2
+            if delta > half:
                 self._turns -= 1
-            elif delta < -2048:
-                # e.g. went from ~4095 to ~0 (wrapped forwards)
+            elif delta < -half:
                 self._turns += 1
+            self._pos_units_last = pos_units
 
-            self._last_pos_units = pos_units
-
-        self.total_pos_units = self._turns * 4096 + pos_units
-        self.total_angle_deg = (self.total_pos_units / 4095.0) * 360.0
-
-    # ---------------- Public API expected by your code ----------------
-    def step_deg(self, delta_deg: float, step_time_s: float = 0.0) -> None:
-        """
-        Rotate by approximately delta_deg (multi-turn), using feedback to stop at target.
-
-        step_time_s is kept for compatibility; we don't rely on it for motion amount.
-        """
-        if self.simulation:
-            # simulation: exact increment
-            self.total_angle_deg += delta_deg
-            return
-
-        direction = 1 if delta_deg >= 0 else -1
-        target_delta = abs(delta_deg)
-
-        # Get starting angle from feedback
-        start_pos = self.read_pos_units()
-        if start_pos is None:
-            raise RuntimeError("Failed to read position (required for multi-turn stepping).")
-        self._update_unwrapped(start_pos)
-        start_angle = self.total_angle_deg
-
-        # Start moving
-        self.set_pwm(direction * abs(self.config.pwm_value))
-
-        t0 = time.time()
-        try:
-            while True:
-                if time.time() - t0 > self.config.move_timeout_s:
-                    raise TimeoutError("Servo move timed out (check PWM value, load, power).")
-
-                pos = self.read_pos_units()
-                if pos is None:
-                    continue  # transient comms; keep trying
-
-                self._update_unwrapped(pos)
-                moved = abs(self.total_angle_deg - start_angle)
-
-                if moved >= target_delta:
-                    break
-
-                time.sleep(self.config.poll_s)
-        finally:
-            self.stop()
-
-        if step_time_s > 0:
-            time.sleep(step_time_s)
+        self.total_pos_units = self._turns * self.config.units_per_rev + pos_units
+        self.total_angle_deg = (self.total_pos_units / self.config.units_per_rev) * 360.0
 
     def get_displacement_m(self) -> float:
         """
-        Displacement from total multi-turn rotation: s = r * theta_total.
+        Displacement = r * theta_total.
         """
         theta_rad = math.radians(self.total_angle_deg)
-        return self.config.radius_m * theta_rad
+        return float(self.config.radius_m * theta_rad)
+
+    # ---------------- API used by your acquisition ----------------
+    def step_deg(self, delta_deg: float, step_time_s: float = 0.0) -> None:
+        """
+        VERY simple: read current pos, command new goal, then sleep a bit.
+        No feedback stop logic (you asked to keep it simple).
+        """
+        if self.simulation:
+            self.total_angle_deg += float(delta_deg)
+            # update sim pos
+            u = int((self.total_angle_deg / 360.0) * self.config.units_per_rev) & self.config.pos_mask
+            self._pos_units_sim = u
+            self._update_unwrapped(u)
+            return
+
+        # Ensure torque on while moving
+        self.torque_enable(True)
+
+        p0 = self.read_pos_units()
+        if p0 is None:
+            # If read fails, just command relative using last known / 0
+            p0 = 0
+
+        # Update unwrap from this reading
+        if self._pos_units_last is None:
+            self._seed_unwrap(p0)
+        else:
+            self._update_unwrapped(p0)
+
+        delta_units = int(round((float(delta_deg) / 360.0) * self.config.units_per_rev))
+        target_units = (p0 + delta_units) & self.config.pos_mask
+
+        self.move_to_units(target_units)
+
+        # crude wait for motion
+        time.sleep(max(0.05, self.config.move_time_ms / 1000.0))
+
+        # optionally additional dwell
+        if step_time_s > 0:
+            time.sleep(step_time_s)
+
+        # Update unwrap after move
+        p1 = self.read_pos_units()
+        if p1 is not None:
+            self._update_unwrapped(p1)
 
     def go_home(self) -> None:
         """
-        For motor-mode systems you usually need a physical home switch or manual zeroing.
-        For now: set current position as zero reference.
+        Set current position as zero reference.
         """
         if self.simulation:
             self.total_angle_deg = 0.0
+            self._pos_units_sim = 0
+            self._seed_unwrap(0)
             return
 
-        pos = self.read_pos_units()
-        if pos is None:
-            raise RuntimeError("Cannot home: failed to read position.")
-
-        # Reset unwrapped tracking to treat current as zero
-        self._last_pos_units = pos
-        self._turns = 0
-        self._update_unwrapped(pos)
-
-        # Zero relative
+        p = self.read_pos_units()
+        if p is None:
+            p = 0
+        self._seed_unwrap(p)
         self.total_pos_units = 0
         self.total_angle_deg = 0.0
+
+    def close(self) -> None:
+        if not self.simulation:
+            try:
+                self.stop()
+            except Exception:
+                pass
+            try:
+                if self._ser is not None:
+                    self._ser.close()
+            except Exception:
+                pass
+            self._ser = None
