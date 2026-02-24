@@ -63,7 +63,7 @@ class SpringLoaderApp(tb.Window):
         plt.style.use("dark_background")
 
         # ---- Hardware (simulation by default) ----
-        SIM = True
+        SIM = False
 
         self.motor = MotorController(simulation=SIM)
         self.sensors = Sensors(self.motor, simulation=SIM)
