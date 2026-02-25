@@ -9,8 +9,10 @@ from hardware import MotorController, Sensors
 DataPoint = Tuple[float, float, float]  # (t [s], displacement [m], force [N])
 
 
-def _safe_read(sensors: Sensors) -> Optional[Tuple[float, float]]:
+def _safe_read(motor: MotorController, sensors: Sensors) -> Optional[Tuple[float, float]]:
     try:
+        # Centralised feedback update (prevents unwrap corruption)
+        motor.update_feedback()
         disp = float(sensors.read_displacement_m())
         force = float(sensors.read_force_N())
         return disp, force
@@ -27,48 +29,41 @@ def run_loading_cycle(
     dwell_s: float = 0.05,
 ) -> Generator[DataPoint, None, None]:
     """
-    Run a single loading–unloading cycle.
-
-    Key change vs your old version:
-      - After each step command, we stream multiple sensor points for ~dwell_s seconds
-      - This makes the GUI plot look "live" and you can see load/position evolve
+    Loading–unloading cycle with smoother streaming.
     """
     t0 = time.monotonic()
+
+    sample_dt = 0.01  # 100 Hz target; raise to 0.02 if it burdens the Pi/bridge
 
     def stream_for(duration_s: float) -> Generator[DataPoint, None, None]:
         t_end = time.monotonic() + max(0.0, duration_s)
         while time.monotonic() < t_end:
             if stop_flag.is_set():
                 return
-            reading = _safe_read(sensors)
+            reading = _safe_read(motor, sensors)
             if reading is not None:
                 disp, force = reading
                 yield (time.monotonic() - t0), disp, force
-            time.sleep(0.02)  # ~50 Hz like your telemetry stream
+            time.sleep(sample_dt)
 
-    # initial baseline stream
+    # baseline
     yield from stream_for(0.2)
 
     # Loading
     for _ in range(n_steps_up):
         if stop_flag.is_set():
             break
-
         motor.step_deg(step_deg)
-
-        # stream during/after move
-        yield from stream_for(max(dwell_s, 0.1))
+        yield from stream_for(max(dwell_s, 0.15))
 
     # Unloading
     for _ in range(n_steps_up):
         if stop_flag.is_set():
             break
-
         motor.step_deg(-step_deg)
+        yield from stream_for(max(dwell_s, 0.15))
 
-        yield from stream_for(max(dwell_s, 0.1))
-
-    # Stop at the end (matches your working method)
+    # stop at end
     try:
         motor.stop()
     except Exception:

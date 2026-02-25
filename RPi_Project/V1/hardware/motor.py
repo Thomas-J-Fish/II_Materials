@@ -4,7 +4,7 @@ from __future__ import annotations
 import time
 import math
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Tuple
 
 import serial
 
@@ -18,37 +18,36 @@ class ServoConfig:
     # Geometry
     radius_m: float = 0.02  # drum/pulley radius [m]
 
-    # Position model: assume 12-bit position (0..4095) per revolution
+    # ---- POSITION FORMAT GUESS ----
+    # Most common: 12-bit (0..4095)
     units_per_rev: int = 4096
-    pos_mask: int = 0x0FFF  # keep low 12 bits
+    pos_mask: int = 0x0FFF
+    # If your servo is 10-bit (0..1023), change to:
+    # units_per_rev = 1024
+    # pos_mask = 0x03FF
+    # -------------------------------
 
-    # Registers (SCSCL-like)
-    TORQUE_ENABLE: int = 40        # 0x28
-    GOAL_POSITION_L: int = 0x2A    # 42
-    PRESENT_POSITION_L: int = 0x38 # 56
-    PRESENT_LOAD_L: int = 0x3C     # 60
+    # Registers (SCSCL-like map; may vary by model)
+    TORQUE_ENABLE: int = 0x28          # 40
+    GOAL_POSITION_L: int = 0x2A        # 42
+    PRESENT_POSITION_L: int = 0x38     # 56
+    PRESENT_LOAD_L: int = 0x3C         # 60
 
-    # Motion settings
-    move_time_ms: int = 1000
+    # Motion settings for goal-position writes
+    move_time_ms: int = 800
     speed: int = 800
 
     # Polling
-    poll_s: float = 0.02
+    poll_s: float = 0.01  # faster sampling (100 Hz target), adjust if needed
 
 
 class MotorController:
     """
-    SIMPLE SCServo controller using raw packets over pyserial.
+    Simple SC/SCS serial servo interface using raw packets over pyserial.
 
-    Exposes the API your GUI already expects:
-      - step_deg(delta)
-      - get_displacement_m()
-      - go_home()
-      - close()
-
-    Plus extra useful reads:
-      - read_pos_units() (0..4095 masked)
-      - read_load_raw()  (0..65535 raw "load/torque proxy")
+    Key features:
+      - Reads POSITION+LOAD in ONE read (faster + fewer desync issues)
+      - Unwrap logic kept here; only updated when you call update_feedback()
     """
 
     INST_READ = 0x02
@@ -60,23 +59,26 @@ class MotorController:
 
         self._ser: Optional[serial.Serial] = None
 
-        # State tracking
-        self._pos_units_sim: int = 0
-        self._pos_units_last: Optional[int] = None
+        # Unwrap tracking
+        self._last_pos_units: Optional[int] = None
         self._turns: int = 0
         self.total_pos_units: int = 0
         self.total_angle_deg: float = 0.0
 
+        # last load
+        self.last_load_raw: float = float("nan")
+
         if not self.simulation:
             self._ser = serial.Serial(self.config.device_name, self.config.baudrate, timeout=0.05)
             time.sleep(0.15)
-            # Ensure torque enabled so it can move + report load
             self.torque_enable(True)
 
-            # Seed position tracking
-            p = self.read_pos_units()
-            if p is not None:
-                self._seed_unwrap(p)
+            # seed
+            pos, load = self.read_pos_and_load()
+            if pos is not None:
+                self._seed_unwrap(pos)
+            if load is not None:
+                self.last_load_raw = float(load)
 
     # ---------------- Packet helpers ----------------
     @staticmethod
@@ -89,10 +91,13 @@ class MotorController:
         chk = cls._checksum(sid, length, inst, params)
         return bytes([0xFF, 0xFF, sid, length, inst] + params + [chk])
 
+    @staticmethod
+    def _u16(lo: int, hi: int) -> int:
+        return (lo & 0xFF) | ((hi & 0xFF) << 8)
+
     def _read_status_packet(self, timeout_s: float = 0.05):
         """
-        Read one status packet:
-          FF FF ID LEN ERR PARAMS... CHK
+        Read one status packet: FF FF ID LEN ERR PARAMS... CHK
         Return (sid, err, params_bytes) or None.
         """
         if self._ser is None:
@@ -100,7 +105,6 @@ class MotorController:
 
         deadline = time.time() + timeout_s
 
-        # Find header
         while time.time() < deadline:
             b = self._ser.read(1)
             if not b or b[0] != 0xFF:
@@ -135,9 +139,13 @@ class MotorController:
         return None
 
     def _read_regs(self, start_addr: int, nbytes: int) -> Optional[bytes]:
+        """
+        Send READ(start_addr, nbytes) and return param bytes.
+        """
         if self._ser is None:
             return None
-        # Clear stale bytes to avoid old responses confusing us
+
+        # flush any old bytes to reduce desync
         try:
             self._ser.reset_input_buffer()
         except Exception:
@@ -160,157 +168,156 @@ class MotorController:
         self._ser.write(self._packet(self.config.servo_id, self.INST_WRITE, params))
         self._ser.flush()
 
-    @staticmethod
-    def _u16(lo: int, hi: int) -> int:
-        return (lo & 0xFF) | ((hi & 0xFF) << 8)
-
-    # ---------------- Torque / move ----------------
+    # ---------------- Public control ----------------
     def torque_enable(self, enable: bool) -> None:
         if self.simulation:
             return
         self._write_bytes([self.config.TORQUE_ENABLE, 1 if enable else 0])
 
+    def stop(self) -> None:
+        # Your proven stop method
+        self.torque_enable(False)
+
     def move_to_units(self, pos_units: int) -> None:
         """
-        Command a goal position (units are 0..4095 typically).
+        Write a goal position (pos units in servo scale).
         """
         if self.simulation:
-            self._pos_units_sim = int(pos_units) & self.config.pos_mask
-            self._update_unwrapped(self._pos_units_sim)
+            # sim: just set internal state
+            pos_units = int(pos_units) & self.config.pos_mask
+            self._update_unwrapped(pos_units)
             return
 
         pos_units = int(pos_units) & 0xFFFF
         params = [
             self.config.GOAL_POSITION_L,
-            pos_units & 0xFF, (pos_units >> 8) & 0xFF,
-            self.config.move_time_ms & 0xFF, (self.config.move_time_ms >> 8) & 0xFF,
-            self.config.speed & 0xFF, (self.config.speed >> 8) & 0xFF,
+            pos_units & 0xFF,
+            (pos_units >> 8) & 0xFF,
+            self.config.move_time_ms & 0xFF,
+            (self.config.move_time_ms >> 8) & 0xFF,
+            self.config.speed & 0xFF,
+            (self.config.speed >> 8) & 0xFF,
         ]
         self._write_bytes(params)
 
-    def stop(self) -> None:
+    # ---------------- Read POSITION+LOAD (single packet) ----------------
+    def read_pos_and_load(self) -> Tuple[Optional[int], Optional[int]]:
         """
-        Your proven "stop" method is torque disable.
-        """
-        self.torque_enable(False)
-
-    # ---------------- Reads ----------------
-    def read_pos_units(self) -> Optional[int]:
-        """
-        Read present position and mask to low 12 bits (0..4095).
+        Single read starting at PRESENT_POSITION_L to include PRESENT_LOAD_L.
+        Typically 6 bytes: pos(2), speed(2), load(2).
         """
         if self.simulation:
-            return self._pos_units_sim & self.config.pos_mask
+            # simple sim
+            pos = (self.total_pos_units % self.config.units_per_rev) & self.config.pos_mask
+            return pos, 0
 
-        data = self._read_regs(self.config.PRESENT_POSITION_L, 2)
-        if data is None or len(data) < 2:
-            return None
-        raw = self._u16(data[0], data[1])
-        return raw & self.config.pos_mask
+        start = self.config.PRESENT_POSITION_L
+        nbytes = (self.config.PRESENT_LOAD_L - self.config.PRESENT_POSITION_L) + 2
+        data = self._read_regs(start, nbytes)
+        if data is None or len(data) < nbytes:
+            return None, None
 
-    def read_load_raw(self) -> Optional[int]:
-        """
-        Read present load (torque proxy). This is usually NOT calibrated.
-        """
-        if self.simulation:
-            return 0
+        # pos at offset 0
+        pos_raw16 = self._u16(data[0], data[1])
+        # IMPORTANT: mask to expected resolution
+        pos = pos_raw16 & self.config.pos_mask
 
-        data = self._read_regs(self.config.PRESENT_LOAD_L, 2)
-        if data is None or len(data) < 2:
-            return None
-        return self._u16(data[0], data[1])
+        # load at offset (LOAD_L - POS_L)
+        off = self.config.PRESENT_LOAD_L - self.config.PRESENT_POSITION_L
+        load = self._u16(data[off], data[off + 1])
 
-    # ---------------- Unwrap + displacement ----------------
+        return pos, load
+
+    # ---------------- Feedback update / unwrapping ----------------
     def _seed_unwrap(self, pos_units: int) -> None:
-        self._pos_units_last = pos_units
+        self._last_pos_units = int(pos_units)
         self._turns = 0
-        self._update_unwrapped(pos_units)
+        self._update_unwrapped(int(pos_units))
 
     def _update_unwrapped(self, pos_units: int) -> None:
-        """
-        Unwrap modulo position into multi-turn units (very simple).
-        """
-        if self._pos_units_last is None:
-            self._pos_units_last = pos_units
+        pos_units = int(pos_units) & self.config.pos_mask
+
+        if self._last_pos_units is None:
+            self._last_pos_units = pos_units
             self._turns = 0
         else:
-            delta = pos_units - self._pos_units_last
+            delta = pos_units - self._last_pos_units
             half = self.config.units_per_rev // 2
+
             if delta > half:
                 self._turns -= 1
             elif delta < -half:
                 self._turns += 1
-            self._pos_units_last = pos_units
+
+            self._last_pos_units = pos_units
 
         self.total_pos_units = self._turns * self.config.units_per_rev + pos_units
         self.total_angle_deg = (self.total_pos_units / self.config.units_per_rev) * 360.0
 
-    def get_displacement_m(self) -> float:
+    def update_feedback(self) -> bool:
         """
-        Displacement = r * theta_total.
+        Read pos+load once, update internal unwrap and last_load_raw.
+        Returns True if a valid read occurred.
         """
-        theta_rad = math.radians(self.total_angle_deg)
-        return float(self.config.radius_m * theta_rad)
+        pos, load = self.read_pos_and_load()
+        if pos is None or load is None:
+            return False
 
-    # ---------------- API used by your acquisition ----------------
+        self._update_unwrapped(pos)
+        self.last_load_raw = float(load)
+        return True
+
+    # ---------------- API expected by your stack ----------------
     def step_deg(self, delta_deg: float, step_time_s: float = 0.0) -> None:
         """
-        VERY simple: read current pos, command new goal, then sleep a bit.
-        No feedback stop logic (you asked to keep it simple).
+        Very simple: read once, command a new goal, sleep for move_time_ms.
         """
         if self.simulation:
             self.total_angle_deg += float(delta_deg)
-            # update sim pos
-            u = int((self.total_angle_deg / 360.0) * self.config.units_per_rev) & self.config.pos_mask
-            self._pos_units_sim = u
-            self._update_unwrapped(u)
+            # update unwrapped using modulo
+            pos = int((self.total_angle_deg / 360.0) * self.config.units_per_rev) & self.config.pos_mask
+            self._update_unwrapped(pos)
             return
 
-        # Ensure torque on while moving
         self.torque_enable(True)
 
-        p0 = self.read_pos_units()
-        if p0 is None:
-            # If read fails, just command relative using last known / 0
-            p0 = 0
+        # get current pos (best effort)
+        ok = self.update_feedback()
+        if not ok and self._last_pos_units is None:
+            # fallback if we have absolutely no feedback yet
+            self._seed_unwrap(0)
 
-        # Update unwrap from this reading
-        if self._pos_units_last is None:
-            self._seed_unwrap(p0)
-        else:
-            self._update_unwrapped(p0)
-
+        p0 = self._last_pos_units if self._last_pos_units is not None else 0
         delta_units = int(round((float(delta_deg) / 360.0) * self.config.units_per_rev))
-        target_units = (p0 + delta_units) & self.config.pos_mask
+        target = (p0 + delta_units) & self.config.pos_mask
 
-        self.move_to_units(target_units)
+        self.move_to_units(target)
 
-        # crude wait for motion
+        # crude wait
         time.sleep(max(0.05, self.config.move_time_ms / 1000.0))
-
-        # optionally additional dwell
         if step_time_s > 0:
             time.sleep(step_time_s)
 
-        # Update unwrap after move
-        p1 = self.read_pos_units()
-        if p1 is not None:
-            self._update_unwrapped(p1)
+        # refresh after move
+        self.update_feedback()
+
+    def get_displacement_m(self) -> float:
+        theta_rad = math.radians(self.total_angle_deg)
+        return float(self.config.radius_m * theta_rad)
 
     def go_home(self) -> None:
-        """
-        Set current position as zero reference.
-        """
         if self.simulation:
-            self.total_angle_deg = 0.0
-            self._pos_units_sim = 0
             self._seed_unwrap(0)
+            self.total_pos_units = 0
+            self.total_angle_deg = 0.0
             return
 
-        p = self.read_pos_units()
-        if p is None:
-            p = 0
-        self._seed_unwrap(p)
+        self.update_feedback()
+        if self._last_pos_units is None:
+            self._seed_unwrap(0)
+        else:
+            self._seed_unwrap(self._last_pos_units)
+
         self.total_pos_units = 0
         self.total_angle_deg = 0.0
 
