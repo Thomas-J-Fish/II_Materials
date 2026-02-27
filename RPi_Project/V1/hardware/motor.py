@@ -1,4 +1,3 @@
-# hardware/motor.py
 from __future__ import annotations
 
 import time
@@ -32,6 +31,7 @@ class ServoConfig:
     GOAL_POSITION_L: int = 0x2A        # 42
     PRESENT_POSITION_L: int = 0x38     # 56
     PRESENT_LOAD_L: int = 0x3C         # 60
+    PRESENT_CURRENT_L: int = 0x45      # 69 (Hex 0x45) - Valid for STS/SC15
 
     # Motion settings for goal-position writes
     move_time_ms: int = 800
@@ -46,7 +46,8 @@ class MotorController:
     Simple SC/SCS serial servo interface using raw packets over pyserial.
 
     Key features:
-      - Reads POSITION+LOAD in ONE read (faster + fewer desync issues)
+      - Reads POSITION+LOAD+CURRENT in ONE read (faster + fewer desync issues)
+      - Handles Signed (Two's Complement) conversion for Load/Current
       - Unwrap logic kept here; only updated when you call update_feedback()
     """
 
@@ -69,16 +70,19 @@ class MotorController:
         self.last_load_raw: float = float("nan")
 
         if not self.simulation:
-            self._ser = serial.Serial(self.config.device_name, self.config.baudrate, timeout=0.05)
-            time.sleep(0.15)
-            self.torque_enable(True)
+            try:
+                self._ser = serial.Serial(self.config.device_name, self.config.baudrate, timeout=0.05)
+                time.sleep(0.15)
+                self.torque_enable(True)
 
-            # seed
-            pos, load = self.read_pos_and_load()
-            if pos is not None:
-                self._seed_unwrap(pos)
-            if load is not None:
-                self.last_load_raw = float(load)
+                # seed
+                pos, load = self.read_pos_and_load()
+                if pos is not None:
+                    self._seed_unwrap(pos)
+                if load is not None:
+                    self.last_load_raw = float(load)
+            except Exception as e:
+                print(f"[Motor] Init failed: {e}")
 
     # ---------------- Packet helpers ----------------
     @staticmethod
@@ -94,6 +98,13 @@ class MotorController:
     @staticmethod
     def _u16(lo: int, hi: int) -> int:
         return (lo & 0xFF) | ((hi & 0xFF) << 8)
+
+    @staticmethod
+    def _to_signed(val: int) -> int:
+        """Convert 16-bit unsigned to signed integer (Two's Complement)."""
+        if val > 32767:
+            val -= 65536
+        return val
 
     def _read_status_packet(self, timeout_s: float = 0.05):
         """
@@ -175,7 +186,6 @@ class MotorController:
         self._write_bytes([self.config.TORQUE_ENABLE, 1 if enable else 0])
 
     def stop(self) -> None:
-        # Your proven stop method
         self.torque_enable(False)
 
     def move_to_units(self, pos_units: int) -> None:
@@ -200,33 +210,47 @@ class MotorController:
         ]
         self._write_bytes(params)
 
-    # ---------------- Read POSITION+LOAD (single packet) ----------------
+    # ---------------- Read POSITION+LOAD+CURRENT (single packet) ----------------
     def read_pos_and_load(self) -> Tuple[Optional[int], Optional[int]]:
         """
-        Single read starting at PRESENT_POSITION_L to include PRESENT_LOAD_L.
-        Typically 6 bytes: pos(2), speed(2), load(2).
+        Single read starting at PRESENT_POSITION_L.
+        NOW UPDATED: Reads through to CURRENT_L/H to get better torque data.
+        Returns: (Position [raw], Current [mA])
         """
         if self.simulation:
             # simple sim
             pos = (self.total_pos_units % self.config.units_per_rev) & self.config.pos_mask
             return pos, 0
 
+        # Read from Position (56) up to Current (69+1=70)
+        # Span: 70 - 56 + 1 = 15 bytes. We read 16 bytes for safety/alignment.
         start = self.config.PRESENT_POSITION_L
-        nbytes = (self.config.PRESENT_LOAD_L - self.config.PRESENT_POSITION_L) + 2
+        end = self.config.PRESENT_CURRENT_L + 1
+        nbytes = (end - start) + 1
+        
         data = self._read_regs(start, nbytes)
         if data is None or len(data) < nbytes:
             return None, None
 
-        # pos at offset 0
+        # 1. Position (Offset 0)
         pos_raw16 = self._u16(data[0], data[1])
-        # IMPORTANT: mask to expected resolution
         pos = pos_raw16 & self.config.pos_mask
 
-        # load at offset (LOAD_L - POS_L)
-        off = self.config.PRESENT_LOAD_L - self.config.PRESENT_POSITION_L
-        load = self._u16(data[off], data[off + 1])
+        # 2. Current (Offset = CurrentAddr - PosAddr)
+        # Current is preferred over 'Load' for scientific plotting
+        off_curr = self.config.PRESENT_CURRENT_L - self.config.PRESENT_POSITION_L
+        
+        # Check if we successfully read enough bytes to reach Current
+        if len(data) >= (off_curr + 2):
+            curr_raw = self._u16(data[off_curr], data[off_curr + 1])
+            val_out = self._to_signed(curr_raw) # Current in mA
+        else:
+            # Fallback to Load if Current bytes missing
+            off_load = self.config.PRESENT_LOAD_L - self.config.PRESENT_POSITION_L
+            load_raw = self._u16(data[off_load], data[off_load + 1])
+            val_out = self._to_signed(load_raw) # Unitless load
 
-        return pos, load
+        return pos, val_out
 
     # ---------------- Feedback update / unwrapping ----------------
     def _seed_unwrap(self, pos_units: int) -> None:
