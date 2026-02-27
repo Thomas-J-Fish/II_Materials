@@ -19,8 +19,8 @@ class ServoConfig:
 
     # ---- POSITION FORMAT GUESS ----
     # Most common: 12-bit (0..4095)
-    units_per_rev: int = 4096
-    pos_mask: int = 0x0FFF
+    units_per_rev: int = 1024
+    pos_mask: int = 0x03FF
     # If your servo is 10-bit (0..1023), change to:
     # units_per_rev = 1024
     # pos_mask = 0x03FF
