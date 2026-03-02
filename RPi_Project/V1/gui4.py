@@ -5,7 +5,9 @@
 # - Clean theme, modern button styles
 # - Live temperature plot (real thermocouple on Pi; simulated temp on laptop)
 # - Temperature trace is colour-mapped (blue=cool → red=hot)
-# - Rolling 60 s window for temperature axis scaling (instrument-style) test
+# - Rolling 60 s window for temperature axis scaling (instrument-style)
+# - NEW: Live load-cell net mass readout (HX711 via Sensors.read_mass_g())
+# - NEW: Tare load cell to holder baseline (button + also triggered by "Set zero")
 
 from __future__ import annotations
 
@@ -46,6 +48,7 @@ except ModuleNotFoundError:
 
 DataPoint = Tuple[float, float, float]  # (t, disp, force)
 TempPoint = Tuple[float, float]         # (t, temp_C)
+LoadPoint = Tuple[float, float]         # (t, mass_g)
 
 
 class SpringLoaderApp(tb.Window):
@@ -63,7 +66,7 @@ class SpringLoaderApp(tb.Window):
         plt.style.use("dark_background")
 
         # ---- Hardware (simulation by default) ----
-        SIM = False
+        SIM = False  # set True for demo mode
 
         self.motor = MotorController(simulation=SIM)
         self.sensors = Sensors(self.motor, simulation=SIM)
@@ -80,6 +83,11 @@ class SpringLoaderApp(tb.Window):
 
         # Rolling window (seconds) for temperature plot
         self.temp_window_s = 60.0
+
+        # ---- Load cell streaming control (net mass g) ----
+        self.load_queue: "queue.Queue[LoadPoint]" = queue.Queue()
+        self.load_running = True
+        self.load_t0 = time.monotonic()
 
         # ---- Data storage (current mechanical run only) ----
         self.time_data: List[float] = []
@@ -138,8 +146,9 @@ class SpringLoaderApp(tb.Window):
         self._build_plots()
         self.apply_units_to_si()
 
-        # Start background temperature reader thread (real or simulated)
+        # Start background threads
         threading.Thread(target=self._temperature_worker, daemon=True).start()
+        threading.Thread(target=self._loadcell_worker, daemon=True).start()
 
         # GUI update cadence (ms). 50–100 is sensible for Pi.
         self.after(50, self._update_plot_from_queue)
@@ -162,6 +171,22 @@ class SpringLoaderApp(tb.Window):
             textvariable=self.temp_readout_var,
             font=("Helvetica", 28, "bold"),
         ).pack(anchor="w", pady=(0, 12))
+
+        # Big live load readout (net mass, relative to tare)
+        self.load_readout_var = tb.StringVar(value="---.- g")
+        tb.Label(control, text="Live Load (net)", font=("Helvetica", 11)).pack(anchor="w")
+        tb.Label(
+            control,
+            textvariable=self.load_readout_var,
+            font=("Helvetica", 26, "bold"),
+        ).pack(anchor="w", pady=(0, 10))
+
+        tb.Button(
+            control,
+            text="Tare load cell (holder baseline)",
+            bootstyle=INFO,
+            command=self.tare_loadcell,
+        ).pack(fill=X, pady=(0, 10))
 
         # Start/Stop row
         btn_row = tb.Frame(control)
@@ -255,7 +280,7 @@ class SpringLoaderApp(tb.Window):
         self.ax_xt.set_xlabel("t [s]")
         self.ax_xt.set_ylabel("x [m]")
 
-        self.ax_Ft.set_title("Force / torque proxy vs time")
+        self.ax_Ft.set_title("Force (HX711) vs time")
         self.ax_Ft.set_xlabel("t [s]")
         self.ax_Ft.set_ylabel("F [N]")
 
@@ -340,6 +365,21 @@ class SpringLoaderApp(tb.Window):
         }
 
     # ------------------------------------------------------------------
+    # Load cell control
+    # ------------------------------------------------------------------
+    def tare_loadcell(self) -> None:
+        ok = False
+        try:
+            ok = self.sensors.tare_loadcell()
+        except Exception:
+            ok = False
+
+        if ok:
+            self.status_var.set("Load cell tared to holder baseline")
+        else:
+            self.status_var.set("Load cell tare failed (no calibration? wiring?)")
+
+    # ------------------------------------------------------------------
     # Control actions
     # ------------------------------------------------------------------
     def set_zero(self) -> None:
@@ -352,12 +392,18 @@ class SpringLoaderApp(tb.Window):
             self.disp0 = 0.0
             self.force0 = 0.0
 
+        # Also tare load cell (recommended baseline per run)
+        try:
+            self.sensors.tare_loadcell()
+        except Exception:
+            pass
+
         try:
             self.motor.go_home()
         except Exception:
             pass
 
-        self.status_var.set("Zero set")
+        self.status_var.set("Zero set (and load cell tared)")
 
     def new_run_overlay(self) -> None:
         if self.disp_data and self.force_data:
@@ -463,7 +509,7 @@ class SpringLoaderApp(tb.Window):
                 if self.tc is not None:
                     T = float(self.tc.read_temp_c())
                 else:
-                    # Laptop/demo mode: stable, nice-looking signal around 25°C
+                    # Laptop/demo mode: stable, nice-looking signal around 50°C
                     T = 50.0 + 50.0 * math.sin(2.0 * math.pi * (t / 30.0)) + 5 * math.sin(2.0 * math.pi * (t / 3.0))
 
                 self.temp_queue.put((t, T))
@@ -473,12 +519,27 @@ class SpringLoaderApp(tb.Window):
             time.sleep(0.1)
 
     # ------------------------------------------------------------------
+    # Load cell stream thread (mass readout)
+    # ------------------------------------------------------------------
+    def _loadcell_worker(self) -> None:
+        while self.load_running:
+            try:
+                t = time.monotonic() - self.load_t0
+                m = self.sensors.read_mass_g()
+                if m is not None:
+                    self.load_queue.put((t, float(m)))
+            except Exception:
+                pass
+            time.sleep(0.1)
+
+    # ------------------------------------------------------------------
     # GUI thread plot updates
     # ------------------------------------------------------------------
     def _update_plot_from_queue(self) -> None:
         updated = False
         temp_updated = False
         latest_T: Optional[float] = None
+        latest_mass: Optional[float] = None
 
         # Drain mechanical data
         try:
@@ -508,8 +569,19 @@ class SpringLoaderApp(tb.Window):
         except queue.Empty:
             pass
 
+        # Drain load cell data (latest only for readout)
+        try:
+            while True:
+                _lt, mg = self.load_queue.get_nowait()
+                latest_mass = float(mg)
+        except queue.Empty:
+            pass
+
         if latest_T is not None:
             self.temp_readout_var.set(f"{latest_T:0.2f} °C")
+
+        if latest_mass is not None:
+            self.load_readout_var.set(f"{latest_mass:0.1f} g")
 
         if updated:
             self.line_xt.set_data(self.time_data, self.disp_data)
@@ -522,36 +594,28 @@ class SpringLoaderApp(tb.Window):
             x_all = np.array(self.temp_time, dtype=float)
             y_all = np.array(self.temp_data, dtype=float)
 
-            # Build coloured line for ALL points (so colour history is preserved)
             pts = np.column_stack([x_all, y_all]).reshape(-1, 1, 2)
             segs = np.concatenate([pts[:-1], pts[1:]], axis=1)
             self.temp_lc.set_segments(segs)
             self.temp_lc.set_array(y_all[:-1])  # colour by temperature
 
-            # Rolling window for axes limits
             xmax = float(x_all.max())
             xmin = max(0.0, xmax - self.temp_window_s)
 
-            # Select only points inside the window for y-limits
             mask = x_all >= xmin
             y_win = y_all[mask] if np.any(mask) else y_all
 
             ymin = float(y_win.min())
             ymax = float(y_win.max())
-
-            # Padding so trace isn't glued to borders
             ypad = 0.05 * (ymax - ymin) if ymax > ymin else 1.0
 
             self.ax_Tt.set_xlim(xmin, xmax + 0.5)
             self.ax_Tt.set_ylim(ymin - ypad, ymax + ypad)
 
         if updated or temp_updated:
-            # These relim/autoscale calls still help other axes
             for ax in (self.ax_xt, self.ax_Ft, self.ax_ss):
                 ax.relim()
                 ax.autoscale_view()
-
-            # Temperature axis is manually scaled above (rolling window)
             self.canvas.draw_idle()
 
         self.after(50, self._update_plot_from_queue)
@@ -648,6 +712,7 @@ class SpringLoaderApp(tb.Window):
     def _on_close(self) -> None:
         self.stop_event.set()
         self.temp_running = False
+        self.load_running = False
 
         try:
             if self.tc is not None:

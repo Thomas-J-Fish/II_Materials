@@ -2,6 +2,7 @@
 
 from .motor import MotorController
 from .sensors import Sensors, ForceCal
+from .loadcell import LoadCell
 
 # Optional exports (Pi-only hardware)
 try:
