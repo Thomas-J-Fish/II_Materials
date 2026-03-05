@@ -76,8 +76,7 @@ class LoadCell:
         if self._hx is None:
             return None
         try:
-            v = int(self._hx.read_raw())
-            return v
+            return int(self._hx.read_raw())
         except Exception:
             return None
 
@@ -96,7 +95,7 @@ class LoadCell:
     def _read_raw_median(self) -> Optional[int]:
         good: List[int] = []
         attempts = 0
-        target = max(7, self.cfg.median_samples)  # slightly higher minimum
+        target = max(10, self.cfg.median_samples)
 
         while len(good) < target and attempts < (target * 5):
             attempts += 1
@@ -104,14 +103,12 @@ class LoadCell:
             if raw is None:
                 time.sleep(self.cfg.sample_delay_s)
                 continue
-
             if self._raw_is_plausible(raw):
                 good.append(raw)
                 self._raw_hist.append(raw)
-
             time.sleep(self.cfg.sample_delay_s)
 
-        if len(good) < 7:
+        if len(good) < 10:
             self._bad_in_row += 1
             if self._bad_in_row >= self.cfg.max_bad_in_row:
                 return None
@@ -121,9 +118,6 @@ class LoadCell:
         return int(statistics.median(good))
 
     def tare_to_current(self) -> bool:
-        """
-        Tare must NOT accept invalid frames like -1.
-        """
         raw = self._read_raw_median()
         if raw is None or self._is_invalid_edge(raw):
             return False
@@ -135,11 +129,14 @@ class LoadCell:
         if raw is None:
             return None
         net = raw - self.offset_counts
-        scale = abs(self.scale_counts_per_g) if self.scale_counts_per_g != 0 else 1.0
+        scale = abs(self.scale_counts_per_g)
+        if scale < 1e-9:
+            return None
         return net / scale
 
     def read_force_n(self) -> Optional[float]:
-        m = self.read_mass_g()
-        if m is None:
+        # Always derive from mass for consistency
+        m_g = self.read_mass_g()
+        if m_g is None:
             return None
-        return (m / 1000.0) * self.cfg.g
+        return (m_g / 1000.0) * self.cfg.g
