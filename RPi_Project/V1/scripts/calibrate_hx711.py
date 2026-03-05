@@ -8,8 +8,7 @@ from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Optional, List
 
-# Use your in-repo HX711 GPIO driver
-from hardware.hx711 import HX711, HX711Config
+from V1.hardware.hx711 import HX711, HX711Config
 
 
 @dataclass
@@ -58,7 +57,7 @@ def main() -> None:
     DOUT = 5
     SCK = 6
 
-    # Always save into repo-root calibration folder (../calibration relative to scripts/)
+    # Save into V1/calibration (anchored to this file)
     out_dir = Path(__file__).resolve().parents[1] / "calibration"
     out_dir.mkdir(exist_ok=True)
 
