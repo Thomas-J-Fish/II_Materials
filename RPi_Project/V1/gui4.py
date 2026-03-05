@@ -6,8 +6,13 @@
 # - Live temperature plot (real thermocouple on Pi; simulated temp on laptop)
 # - Temperature trace is colour-mapped (blue=cool → red=hot)
 # - Rolling 60 s window for temperature axis scaling (instrument-style)
-# - NEW: Live load-cell net mass readout (HX711 via Sensors.read_mass_g())
-# - NEW: Tare load cell to holder baseline (button + also triggered by "Set zero")
+# - Live load-cell net mass readout (HX711 via Sensors.read_mass_g())
+# - Tare load cell to holder baseline (button + also triggered by "Set zero")
+#
+# IMPORTANT CHANGE (to fix your /dev/ttyUSB0 issue):
+#   Motor + Loadcell simulation are now independent.
+#   If the motor port is missing, we automatically fall back to motor simulation,
+#   but we still use the REAL HX711 load cell (if calibration exists).
 
 from __future__ import annotations
 
@@ -45,6 +50,14 @@ except ModuleNotFoundError:
     ThermocoupleConfig = None  # type: ignore
     THERMOCOUPLE_AVAILABLE = False
 
+# Optional loadcell import (Pi only); we use this to force real HX711 even if motor is simulated
+try:
+    from hardware.loadcell import LoadCell
+    LOADCELL_IMPORT_OK = True
+except Exception:
+    LoadCell = None  # type: ignore
+    LOADCELL_IMPORT_OK = False
+
 
 DataPoint = Tuple[float, float, float]  # (t, disp, force)
 TempPoint = Tuple[float, float]         # (t, temp_C)
@@ -53,7 +66,7 @@ LoadPoint = Tuple[float, float]         # (t, mass_g)
 
 class SpringLoaderApp(tb.Window):
     def __init__(self) -> None:
-        super().__init__(themename="vapor")  # try "darkly" for a more professional look
+        super().__init__(themename="vapor")
 
         self.title("Automatic Spring Loader")
         self.geometry("1300x780")
@@ -65,11 +78,43 @@ class SpringLoaderApp(tb.Window):
         # --- Matplotlib style ---
         plt.style.use("dark_background")
 
-        # ---- Hardware (simulation by default) ----
-        SIM = False  # set True for demo mode
+        # -------------------------------------------------------------
+        # Hardware mode selection
+        # -------------------------------------------------------------
+        # Set these how you want:
+        #
+        # - If servo is NOT connected (or /dev/ttyUSB0 missing), set USE_MOTOR=False.
+        # - If HX711 IS connected and calibrated, keep USE_LOADCELL=True.
+        #
+        USE_MOTOR = False
+        USE_LOADCELL = True
 
-        self.motor = MotorController(simulation=SIM)
-        self.sensors = Sensors(self.motor, simulation=SIM)
+        # Auto fallback: if user asked for motor but device isn't present, simulate motor
+        motor_sim = not USE_MOTOR
+        if USE_MOTOR:
+            if not os.path.exists("/dev/ttyUSB0"):
+                motor_sim = True
+                self._motor_warning = "Motor port /dev/ttyUSB0 not found → motor simulated"
+            else:
+                self._motor_warning = ""
+
+        # Create motor
+        self.motor = MotorController(simulation=motor_sim)
+
+        # Create sensors: pass motor_sim (so motor proxy doesn't break), then override loadcell below if requested
+        self.sensors = Sensors(self.motor, simulation=motor_sim)
+
+        # Force real loadcell even if motor is simulated
+        self._loadcell_warning = ""
+        if USE_LOADCELL:
+            try:
+                if not LOADCELL_IMPORT_OK or LoadCell is None:
+                    raise RuntimeError("LoadCell import unavailable on this system")
+                # Replace whatever Sensors did with a real HX711 loadcell
+                self.sensors.loadcell = LoadCell(simulation=False)
+            except Exception as e:
+                self._loadcell_warning = f"Load cell unavailable: {e}"
+                self.sensors.loadcell = None  # type: ignore
 
         # ---- Experiment control ----
         self.stop_event = threading.Event()
@@ -80,8 +125,6 @@ class SpringLoaderApp(tb.Window):
         self.temp_queue: "queue.Queue[TempPoint]" = queue.Queue()
         self.temp_running = True
         self.temp_t0 = time.monotonic()
-
-        # Rolling window (seconds) for temperature plot
         self.temp_window_s = 60.0
 
         # ---- Load cell streaming control (net mass g) ----
@@ -98,9 +141,9 @@ class SpringLoaderApp(tb.Window):
         self.temp_time: List[float] = []
         self.temp_data: List[float] = []
 
-        # ---- Temperature colour mapping (for colour-coded line) ----
-        self.temp_cmap = plt.get_cmap("coolwarm")               # blue → red
-        self.temp_norm = colors.Normalize(vmin=0, vmax=100)     # fixed colourbar scale (change if desired)
+        # ---- Temperature colour mapping ----
+        self.temp_cmap = plt.get_cmap("coolwarm")
+        self.temp_norm = colors.Normalize(vmin=0, vmax=100)
 
         # ---- Zero offsets for plotting ----
         self.t0: Optional[float] = None
@@ -132,7 +175,7 @@ class SpringLoaderApp(tb.Window):
                 spi_bus=0,
                 spi_dev=0,      # CE0
                 channel=0,      # CH0
-                vref=3.3,       # <-- CHANGE TO 5.0 IF MCP3008 VREF IS 5V
+                vref=3.3,
                 avg_samples=10,
                 max_speed_hz=1350000,
             )
@@ -150,9 +193,20 @@ class SpringLoaderApp(tb.Window):
         threading.Thread(target=self._temperature_worker, daemon=True).start()
         threading.Thread(target=self._loadcell_worker, daemon=True).start()
 
-        # GUI update cadence (ms). 50–100 is sensible for Pi.
+        # GUI update cadence (ms)
         self.after(50, self._update_plot_from_queue)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+        # Show initial status warnings (if any)
+        msgs = []
+        if getattr(self, "_motor_warning", ""):
+            msgs.append(self._motor_warning)
+        if self._loadcell_warning:
+            msgs.append(self._loadcell_warning)
+        if msgs:
+            self.status_var.set(" | ".join(msgs))
+        else:
+            self.status_var.set("Idle")
 
     # ------------------------------------------------------------------
     # GUI construction
@@ -166,20 +220,12 @@ class SpringLoaderApp(tb.Window):
         # Big live temperature readout
         self.temp_readout_var = tb.StringVar(value="--.-- °C")
         tb.Label(control, text="Live Temperature", font=("Helvetica", 11)).pack(anchor="w")
-        tb.Label(
-            control,
-            textvariable=self.temp_readout_var,
-            font=("Helvetica", 28, "bold"),
-        ).pack(anchor="w", pady=(0, 12))
+        tb.Label(control, textvariable=self.temp_readout_var, font=("Helvetica", 28, "bold")).pack(anchor="w", pady=(0, 12))
 
         # Big live load readout (net mass, relative to tare)
         self.load_readout_var = tb.StringVar(value="---.- g")
         tb.Label(control, text="Live Load (net)", font=("Helvetica", 11)).pack(anchor="w")
-        tb.Label(
-            control,
-            textvariable=self.load_readout_var,
-            font=("Helvetica", 26, "bold"),
-        ).pack(anchor="w", pady=(0, 10))
+        tb.Label(control, textvariable=self.load_readout_var, font=("Helvetica", 26, "bold")).pack(anchor="w", pady=(0, 10))
 
         tb.Button(
             control,
@@ -238,6 +284,9 @@ class SpringLoaderApp(tb.Window):
         tc_msg = "Thermocouple: SPI active" if (self.tc is not None) else "Thermocouple: simulated (non-Pi or SPI unavailable)"
         tb.Label(control, text=tc_msg, foreground="#9aa0a6").pack(fill=X, pady=(8, 0))
 
+        lc_msg = "Load cell: active" if getattr(self.sensors, "loadcell", None) is not None else "Load cell: not available (check calibration/ wiring)"
+        tb.Label(control, text=lc_msg, foreground="#9aa0a6").pack(fill=X, pady=(4, 0))
+
         tb.Label(control, text="Tip: Esc exits fullscreen.", foreground="#9aa0a6").pack(fill=X, pady=(10, 0))
 
     def _labeled_entry(self, parent: tb.Frame, label: str, var) -> None:
@@ -249,8 +298,8 @@ class SpringLoaderApp(tb.Window):
         plot_frame.pack(side=RIGHT, fill=BOTH, expand=True)
 
         self.fig = Figure(figsize=(10, 7), dpi=100, constrained_layout=True)
-
         gs = self.fig.add_gridspec(3, 2, width_ratios=[1.1, 1.9], height_ratios=[1.0, 1.0, 1.0])
+
         self.ax_xt = self.fig.add_subplot(gs[0, 0])
         self.ax_Ft = self.fig.add_subplot(gs[1, 0])
         self.ax_Tt = self.fig.add_subplot(gs[2, 0])
@@ -280,7 +329,7 @@ class SpringLoaderApp(tb.Window):
         self.ax_xt.set_xlabel("t [s]")
         self.ax_xt.set_ylabel("x [m]")
 
-        self.ax_Ft.set_title("Force (HX711) vs time")
+        self.ax_Ft.set_title("Force (from HX711) vs time")
         self.ax_Ft.set_xlabel("t [s]")
         self.ax_Ft.set_ylabel("F [N]")
 
@@ -377,7 +426,7 @@ class SpringLoaderApp(tb.Window):
         if ok:
             self.status_var.set("Load cell tared to holder baseline")
         else:
-            self.status_var.set("Load cell tare failed (no calibration? wiring?)")
+            self.status_var.set("Load cell tare failed (check calibration folder + wiring)")
 
     # ------------------------------------------------------------------
     # Control actions
@@ -444,7 +493,7 @@ class SpringLoaderApp(tb.Window):
             ax.relim()
             ax.autoscale_view()
 
-        # Also clear temperature plot visuals (keep colourbar)
+        # Clear temperature plot visuals (keep colourbar)
         self.temp_lc.set_segments([])
         self.temp_lc.set_array(np.array([]))
 
@@ -456,7 +505,7 @@ class SpringLoaderApp(tb.Window):
 
         self.experiment_running = True
         self.stop_event.clear()
-        self.status_var.set("Running...")
+        self.status_var.set("Running... (manual load/unload should change force)")
 
         threading.Thread(target=self._acquisition_worker, daemon=True).start()
 
@@ -509,7 +558,6 @@ class SpringLoaderApp(tb.Window):
                 if self.tc is not None:
                     T = float(self.tc.read_temp_c())
                 else:
-                    # Laptop/demo mode: stable, nice-looking signal around 50°C
                     T = 50.0 + 50.0 * math.sin(2.0 * math.pi * (t / 30.0)) + 5 * math.sin(2.0 * math.pi * (t / 3.0))
 
                 self.temp_queue.put((t, T))
@@ -597,7 +645,7 @@ class SpringLoaderApp(tb.Window):
             pts = np.column_stack([x_all, y_all]).reshape(-1, 1, 2)
             segs = np.concatenate([pts[:-1], pts[1:]], axis=1)
             self.temp_lc.set_segments(segs)
-            self.temp_lc.set_array(y_all[:-1])  # colour by temperature
+            self.temp_lc.set_array(y_all[:-1])
 
             xmax = float(x_all.max())
             xmin = max(0.0, xmax - self.temp_window_s)
