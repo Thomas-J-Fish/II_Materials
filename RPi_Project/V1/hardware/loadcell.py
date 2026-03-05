@@ -1,21 +1,36 @@
-# hardware/loadcell.py
+# V1/hardware/loadcell.py
 from __future__ import annotations
 
 import statistics
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional, List
 
 from .hx711 import HX711, HX711Config
 from .loadcell_calibration import load_latest_calibration
 
 
+def _default_cal_dir() -> str:
+    """
+    Return calibration directory path anchored to the V1 package folder,
+    so it works regardless of current working directory.
+    """
+    here = Path(__file__).resolve()
+    v1_dir = here.parents[1]  # .../V1
+    return str(v1_dir / "calibration")
+
+
 @dataclass
 class LoadCellConfig:
-    cal_dir: str = "calibration"
+    cal_dir: str = ""  # set in __post_init__
     median_samples: int = 25
     sample_delay_s: float = 0.003
     g: float = 9.80665
+
+    def __post_init__(self) -> None:
+        if not self.cal_dir:
+            self.cal_dir = _default_cal_dir()
 
 
 class LoadCell:
