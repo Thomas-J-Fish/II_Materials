@@ -25,10 +25,10 @@ class LoadCellConfig:
     sample_delay_s: float = 0.003
     g: float = 9.80665
 
-    # Simple robustness controls (prevents insane spikes)
-    max_raw_step: int = 2_000_000     # reject raw jumps bigger than this (counts)
-    history_len: int = 15             # recent raw history for jump comparison
-    max_bad_in_row: int = 20          # after this, return None
+    # robustness
+    max_raw_step: int = 2_000_000
+    history_len: int = 15
+    max_bad_in_row: int = 50
 
     def __post_init__(self) -> None:
         if not self.cal_dir:
@@ -36,12 +36,6 @@ class LoadCellConfig:
 
 
 class LoadCell:
-    """
-    Calibration-aware HX711 reader.
-    Returns NET mass (g) relative to offset (tare/calibration baseline).
-    Hardened against occasional corrupted raw reads by rejecting large jumps.
-    """
-
     def __init__(self, simulation: bool = False, cfg: Optional[LoadCellConfig] = None):
         self.simulation = simulation
         self.cfg = cfg or LoadCellConfig()
@@ -52,7 +46,6 @@ class LoadCell:
 
         self._hx: Optional[HX711] = None
         self._t0 = time.monotonic()
-
         self._raw_hist: Deque[int] = deque(maxlen=self.cfg.history_len)
         self._bad_in_row = 0
 
@@ -73,40 +66,39 @@ class LoadCell:
         finally:
             self._hx = None
 
-    def _sim_raw(self) -> int:
-        import math
-        t = time.monotonic() - self._t0
-        m = 50.0 + 50.0 * (0.5 * (1.0 + math.sin(2 * math.pi * t / 4.0)))
-        return int(self.offset_counts + m * self.scale_counts_per_g)
-
     def _read_raw_once(self) -> Optional[int]:
         if self.simulation:
-            return self._sim_raw()
+            import math
+            t = time.monotonic() - self._t0
+            m = 50.0 + 50.0 * (0.5 * (1.0 + math.sin(2 * math.pi * t / 4.0)))
+            return int(self.offset_counts + m * self.scale_counts_per_g)
+
         if self._hx is None:
             return None
         try:
-            return int(self._hx.read_raw())
+            v = int(self._hx.read_raw())
+            return v
         except Exception:
             return None
 
+    @staticmethod
+    def _is_invalid_edge(raw: int) -> bool:
+        return raw == -1 or raw == 8388607
+
     def _raw_is_plausible(self, raw: int) -> bool:
-        """
-        Reject raw values that jump wildly compared to recent history median.
-        """
+        if self._is_invalid_edge(raw):
+            return False
         if not self._raw_hist:
             return True
         med = int(statistics.median(self._raw_hist))
         return abs(raw - med) <= self.cfg.max_raw_step
 
     def _read_raw_median(self) -> Optional[int]:
-        """
-        Collect samples, reject implausible spikes, return median of good samples.
-        """
         good: List[int] = []
         attempts = 0
+        target = max(7, self.cfg.median_samples)  # slightly higher minimum
 
-        # try until we have enough good samples or too many failures
-        while len(good) < max(5, self.cfg.median_samples) and attempts < (self.cfg.median_samples * 3):
+        while len(good) < target and attempts < (target * 5):
             attempts += 1
             raw = self._read_raw_once()
             if raw is None:
@@ -116,13 +108,10 @@ class LoadCell:
             if self._raw_is_plausible(raw):
                 good.append(raw)
                 self._raw_hist.append(raw)
-            else:
-                # spike rejected, don't add to history
-                pass
 
             time.sleep(self.cfg.sample_delay_s)
 
-        if len(good) < 5:
+        if len(good) < 7:
             self._bad_in_row += 1
             if self._bad_in_row >= self.cfg.max_bad_in_row:
                 return None
@@ -131,19 +120,21 @@ class LoadCell:
         self._bad_in_row = 0
         return int(statistics.median(good))
 
+    def tare_to_current(self) -> bool:
+        """
+        Tare must NOT accept invalid frames like -1.
+        """
+        raw = self._read_raw_median()
+        if raw is None or self._is_invalid_edge(raw):
+            return False
+        self.offset_counts = float(raw)
+        return True
+
     def read_mass_g(self) -> Optional[float]:
-        """
-        Return NET mass in grams relative to the current offset_counts.
-        Use absolute value of calibration scale so that a negative scale in the
-        JSON (caused by a reversed sign during a prior calibration) won't
-        flip the sign of reported mass.
-        """
         raw = self._read_raw_median()
         if raw is None:
             return None
         net = raw - self.offset_counts
-
-        # Use magnitude of calibration scale for conversion (avoid sign inversion)
         scale = abs(self.scale_counts_per_g) if self.scale_counts_per_g != 0 else 1.0
         return net / scale
 
@@ -152,15 +143,3 @@ class LoadCell:
         if m is None:
             return None
         return (m / 1000.0) * self.cfg.g
-
-    def tare_to_current(self) -> bool:
-        """
-        Set offset_counts to the current raw reading.
-        After this call, read_mass_g() will return values relative to the
-        current raw baseline (holder-only ≈ 0 g).
-        """
-        raw = self._read_raw_median()
-        if raw is None:
-            return False
-        self.offset_counts = float(raw)
-        return True

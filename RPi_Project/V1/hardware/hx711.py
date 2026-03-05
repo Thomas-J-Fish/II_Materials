@@ -1,25 +1,26 @@
-# hardware/hx711.py
+# V1/hardware/hx711.py
 from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-
 import RPi.GPIO as GPIO
 
 
 @dataclass
 class HX711Config:
-    dout_pin: int = 5          # DATA -> GPIO5 (BCM)
-    sck_pin: int = 6           # SCK  -> GPIO6 (BCM)
-    gain: int = 128            # 128 for channel A
+    dout_pin: int = 5
+    sck_pin: int = 6
+    gain: int = 128
     read_timeout_s: float = 0.2
     settle_s: float = 0.05
+    retries: int = 12  # more retries to ride through occasional bad frames
 
 
 class HX711:
     """
-    Minimal HX711 driver using RPi.GPIO (BCM numbering).
-    Reads 24-bit two's complement values.
+    HX711 driver with explicit rejection of known-invalid frames:
+      - 0xFFFFFF -> signed -1
+      - 0x7FFFFF -> signed +8388607
     """
 
     def __init__(self, cfg: HX711Config):
@@ -31,9 +32,7 @@ class HX711:
         GPIO.setup(self.cfg.dout_pin, GPIO.IN)
 
         time.sleep(self.cfg.settle_s)
-
-        # Prime gain/channel
-        _ = self.read_raw()
+        _ = self.read_raw()  # prime
 
     def close(self) -> None:
         try:
@@ -45,15 +44,17 @@ class HX711:
         return GPIO.input(self.cfg.dout_pin) == 0
 
     def _gain_pulses(self) -> int:
-        if self.cfg.gain == 128:
-            return 1
-        if self.cfg.gain == 32:
-            return 2
-        if self.cfg.gain == 64:
-            return 3
-        raise ValueError("gain must be one of {128, 64, 32}")
+        return {128: 1, 32: 2, 64: 3}.get(self.cfg.gain) or 1
 
-    def read_raw(self) -> int:
+    @staticmethod
+    def _to_signed_24(u24: int) -> int:
+        u24 &= 0xFFFFFF
+        if u24 & 0x800000:
+            u24 -= 1 << 24
+        return int(u24)
+
+    def _read_u24_once(self) -> int:
+        # wait ready
         t0 = time.monotonic()
         while not self.is_ready():
             if time.monotonic() - t0 > self.cfg.read_timeout_s:
@@ -63,26 +64,37 @@ class HX711:
         value = 0
         for _ in range(24):
             GPIO.output(self.cfg.sck_pin, GPIO.HIGH)
-            time.sleep(0.000001)
-            value = (value << 1) | GPIO.input(self.cfg.dout_pin)
+            time.sleep(1e-6)
+            value = (value << 1) | (GPIO.input(self.cfg.dout_pin) & 1)
             GPIO.output(self.cfg.sck_pin, GPIO.LOW)
-            time.sleep(0.000001)
+            time.sleep(1e-6)
 
+        # set gain/channel for next conversion
         for _ in range(self._gain_pulses()):
             GPIO.output(self.cfg.sck_pin, GPIO.HIGH)
-            time.sleep(0.000001)
+            time.sleep(1e-6)
             GPIO.output(self.cfg.sck_pin, GPIO.LOW)
-            time.sleep(0.000001)
+            time.sleep(1e-6)
 
-        if value & 0x800000:
-            value -= 1 << 24
+        return int(value) & 0xFFFFFF
 
-        return int(value)
+    def read_raw(self) -> int:
+        last_exc: Exception | None = None
 
-    def read_average(self, samples: int = 10, delay_s: float = 0.01) -> float:
-        vals = []
-        for _ in range(max(1, samples)):
-            vals.append(self.read_raw())
-            if delay_s > 0:
-                time.sleep(delay_s)
-        return sum(vals) / len(vals)
+        for _ in range(max(1, self.cfg.retries)):
+            try:
+                u24 = self._read_u24_once()
+                signed = self._to_signed_24(u24)
+
+                # Reject exact edge patterns (these are what you printed)
+                if signed == -1 or signed == 8388607:
+                    continue
+
+                return signed
+            except Exception as e:
+                last_exc = e
+                continue
+
+        if last_exc is not None:
+            raise last_exc
+        raise RuntimeError("HX711 read failed (too many invalid frames)")
