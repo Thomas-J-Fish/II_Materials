@@ -6,13 +6,12 @@
 # - Live temperature plot (real thermocouple on Pi; simulated temp on laptop)
 # - Temperature trace is colour-mapped (blue=cool → red=hot)
 # - Rolling 60 s window for temperature axis scaling (instrument-style)
-# - Live load-cell net mass readout (HX711 via Sensors.read_mass_g())
-# - Tare load cell to holder baseline (button + also triggered by "Set zero")
+# - Live FORCE plot from load cell (HX711) streamed continuously
 #
-# IMPORTANT CHANGE (to fix your /dev/ttyUSB0 issue):
-#   Motor + Loadcell simulation are now independent.
-#   If the motor port is missing, we automatically fall back to motor simulation,
-#   but we still use the REAL HX711 load cell (if calibration exists).
+# IMPORTANT ARCHITECTURE FIX:
+#   Only ONE thread talks to the HX711 (the loadcell worker).
+#   The GUI force plot uses that stream directly.
+#   This avoids concurrent HX711 reads (a common cause of timeouts / frozen plots).
 
 from __future__ import annotations
 
@@ -39,7 +38,6 @@ from matplotlib import colors
 import numpy as np
 
 from hardware import MotorController, Sensors
-from acquisition import run_loading_cycle
 
 # Optional thermocouple import (Pi only)
 try:
@@ -59,9 +57,9 @@ except Exception:
     LOADCELL_IMPORT_OK = False
 
 
-DataPoint = Tuple[float, float, float]  # (t, disp, force)
+DataPoint = Tuple[float, float, float]  # (t, disp, force)  [used for later full acquisition]
 TempPoint = Tuple[float, float]         # (t, temp_C)
-LoadPoint = Tuple[float, float]         # (t, mass_g)
+LoadPoint = Tuple[float, float]         # (t, force_N)  <-- live HX711 stream
 
 
 class SpringLoaderApp(tb.Window):
@@ -81,15 +79,10 @@ class SpringLoaderApp(tb.Window):
         # -------------------------------------------------------------
         # Hardware mode selection
         # -------------------------------------------------------------
-        # Set these how you want:
-        #
-        # - If servo is NOT connected (or /dev/ttyUSB0 missing), set USE_MOTOR=False.
-        # - If HX711 IS connected and calibrated, keep USE_LOADCELL=True.
-        #
+        # For your current goal (live HX711 force plot), keep motor simulated.
         USE_MOTOR = False
         USE_LOADCELL = True
 
-        # Auto fallback: if user asked for motor but device isn't present, simulate motor
         motor_sim = not USE_MOTOR
         self._motor_warning = ""
         if USE_MOTOR:
@@ -100,8 +93,7 @@ class SpringLoaderApp(tb.Window):
         # Create motor
         self.motor = MotorController(simulation=motor_sim)
 
-        # Create sensors: pass motor_sim (so motor proxy doesn't break),
-        # then override loadcell below if requested.
+        # Create sensors: pass motor_sim to keep displacement safe even if motor absent.
         self.sensors = Sensors(self.motor, simulation=motor_sim)
 
         # Force REAL loadcell even if motor is simulated
@@ -110,16 +102,17 @@ class SpringLoaderApp(tb.Window):
             try:
                 if not LOADCELL_IMPORT_OK or LoadCell is None:
                     raise RuntimeError("LoadCell import unavailable on this system")
-                # Replace whatever Sensors did with a real HX711 loadcell
                 self.sensors.loadcell = LoadCell(simulation=False)
             except Exception as e:
                 self._loadcell_warning = f"Load cell unavailable: {e}"
                 self.sensors.loadcell = None  # type: ignore
         else:
-            # explicitly disable loadcell
             self.sensors.loadcell = None  # type: ignore
 
         # ---- Experiment control ----
+        # NOTE: We are NOT using the mechanical acquisition loop for force right now
+        # because it can cause concurrent HX711 reads. We keep the buttons, but
+        # Start/Stop are effectively placeholders until you unify acquisition later.
         self.stop_event = threading.Event()
         self.experiment_running = False
         self.data_queue: "queue.Queue[DataPoint]" = queue.Queue()
@@ -130,12 +123,13 @@ class SpringLoaderApp(tb.Window):
         self.temp_t0 = time.monotonic()
         self.temp_window_s = 60.0
 
-        # ---- Load cell streaming control (net mass g) ----
+        # ---- Load cell streaming control (FORCE N) ----
         self.load_queue: "queue.Queue[LoadPoint]" = queue.Queue()
         self.load_running = True
         self.load_t0 = time.monotonic()
+        self.force_window_s = 60.0  # rolling window for force plot
 
-        # ---- Data storage (current mechanical run only) ----
+        # ---- Data storage (kept for future full runs; not required right now) ----
         self.time_data: List[float] = []
         self.disp_data: List[float] = []
         self.force_data: List[float] = []
@@ -143,6 +137,10 @@ class SpringLoaderApp(tb.Window):
         # ---- Temperature storage (continuous) ----
         self.temp_time: List[float] = []
         self.temp_data: List[float] = []
+
+        # ---- Live force storage (continuous) ----
+        self.force_time_live: List[float] = []
+        self.force_data_live: List[float] = []
 
         # ---- Temperature colour mapping ----
         self.temp_cmap = plt.get_cmap("coolwarm")
@@ -161,7 +159,7 @@ class SpringLoaderApp(tb.Window):
         self.area_mm2_var = tb.DoubleVar(value=1.0)     # mm^2
         self.gauge_mm_var = tb.DoubleVar(value=10.0)    # mm
 
-        # ---- Run parameters ----
+        # ---- Run parameters (kept for later) ----
         self.step_var = tb.DoubleVar(value=1.0)         # deg
         self.n_steps_var = tb.IntVar(value=50)
         self.dwell_var = tb.DoubleVar(value=0.05)
@@ -209,7 +207,7 @@ class SpringLoaderApp(tb.Window):
         if msgs:
             self.status_var.set(" | ".join(msgs))
         else:
-            self.status_var.set("Idle")
+            self.status_var.set("Idle (live force plotting active)")
 
     # ------------------------------------------------------------------
     # GUI construction
@@ -225,9 +223,9 @@ class SpringLoaderApp(tb.Window):
         tb.Label(control, text="Live Temperature", font=("Helvetica", 11)).pack(anchor="w")
         tb.Label(control, textvariable=self.temp_readout_var, font=("Helvetica", 28, "bold")).pack(anchor="w", pady=(0, 12))
 
-        # Big live load readout (net mass, relative to tare)
-        self.load_readout_var = tb.StringVar(value="---.- g")
-        tb.Label(control, text="Live Load (net)", font=("Helvetica", 11)).pack(anchor="w")
+        # Big live force readout (net, relative to tare)
+        self.load_readout_var = tb.StringVar(value="---.-- N")
+        tb.Label(control, text="Live Force (net)", font=("Helvetica", 11)).pack(anchor="w")
         tb.Label(control, textvariable=self.load_readout_var, font=("Helvetica", 26, "bold")).pack(anchor="w", pady=(0, 10))
 
         tb.Button(
@@ -237,7 +235,7 @@ class SpringLoaderApp(tb.Window):
             command=self.tare_loadcell,
         ).pack(fill=X, pady=(0, 10))
 
-        # Start/Stop row
+        # Start/Stop row (kept, but Start is disabled during this phase)
         btn_row = tb.Frame(control)
         btn_row.pack(fill=X, pady=(0, 10))
 
@@ -328,7 +326,7 @@ class SpringLoaderApp(tb.Window):
         self.canvas.get_tk_widget().pack(fill=BOTH, expand=True)
 
     def _format_axes(self) -> None:
-        self.ax_xt.set_title("Displacement vs time")
+        self.ax_xt.set_title("Displacement vs time (simulated / motor-based)")
         self.ax_xt.set_xlabel("t [s]")
         self.ax_xt.set_ylabel("x [m]")
 
@@ -340,7 +338,7 @@ class SpringLoaderApp(tb.Window):
         self.ax_Tt.set_xlabel("t [s]")
         self.ax_Tt.set_ylabel("T [°C]")
 
-        self.ax_ss.set_title("Stress–strain")
+        self.ax_ss.set_title("Stress–strain (future full run)")
         self.ax_ss.set_xlabel("strain ε [-]")
         self.ax_ss.set_ylabel("stress σ [Pa]")
 
@@ -435,16 +433,7 @@ class SpringLoaderApp(tb.Window):
     # Control actions
     # ------------------------------------------------------------------
     def set_zero(self) -> None:
-        if self.time_data:
-            self.t0 = self.time_data[-1]
-            self.disp0 = self.disp_data[-1]
-            self.force0 = self.force_data[-1]
-        else:
-            self.t0 = None
-            self.disp0 = 0.0
-            self.force0 = 0.0
-
-        # Also tare load cell (recommended baseline per run)
+        # For now: just tare loadcell and reset motor home if possible.
         try:
             self.sensors.tare_loadcell()
         except Exception:
@@ -458,6 +447,7 @@ class SpringLoaderApp(tb.Window):
         self.status_var.set("Zero set (and load cell tared)")
 
     def new_run_overlay(self) -> None:
+        # kept for later
         if self.disp_data and self.force_data:
             strain, stress = self._compute_stress_strain()
             if strain and stress:
@@ -489,13 +479,13 @@ class SpringLoaderApp(tb.Window):
         self.force0 = 0.0
 
         self.line_xt.set_data([], [])
-        self.line_Ft.set_data([], [])
         self.line_ss.set_data([], [])
 
-        for ax in (self.ax_xt, self.ax_Ft, self.ax_ss):
+        for ax in (self.ax_xt, self.ax_ss):
             ax.relim()
             ax.autoscale_view()
 
+        # Do NOT clear live force stream (it is continuous)
         # Clear temperature plot visuals (keep colourbar)
         self.temp_lc.set_segments([])
         self.temp_lc.set_array(np.array([]))
@@ -503,52 +493,15 @@ class SpringLoaderApp(tb.Window):
         self.canvas.draw_idle()
 
     def start_experiment(self) -> None:
-        if self.experiment_running:
-            return
-
-        self.experiment_running = True
-        self.stop_event.clear()
-        self.status_var.set("Running... (manual load/unload should change force)")
-
-        threading.Thread(target=self._acquisition_worker, daemon=True).start()
+        # To keep this simple and robust: disable the full mechanical acquisition for now.
+        # (It would reintroduce concurrent HX711 reads unless we unify streams.)
+        self.status_var.set("Start disabled: live force plotting is active. Integrate acquisition later.")
+        return
 
     def stop_experiment(self) -> None:
         self.stop_event.set()
         self.experiment_running = False
-        self.status_var.set("Stopping...")
-
-    # ------------------------------------------------------------------
-    # Acquisition thread
-    # ------------------------------------------------------------------
-    def _acquisition_worker(self) -> None:
-        try:
-            step_deg = float(self.step_var.get())
-            n_steps_up = int(self.n_steps_var.get())
-            dwell_s = float(self.dwell_var.get())
-            _ = int(self.rate_var.get())
-
-            for t, disp, force in run_loading_cycle(
-                motor=self.motor,
-                sensors=self.sensors,
-                stop_flag=self.stop_event,
-                step_deg=step_deg,
-                n_steps_up=n_steps_up,
-                dwell_s=dwell_s,
-            ):
-                if self.stop_event.is_set():
-                    break
-
-                t_rel = t if self.t0 is None else (t - self.t0)
-                disp_rel = disp - self.disp0
-                force_rel = force - self.force0
-                self.data_queue.put((t_rel, disp_rel, force_rel))
-
-        except Exception as e:
-            self.data_queue.put((-1.0, float("nan"), float("nan")))
-            self._error_message = str(e)
-        finally:
-            self.experiment_running = False
-            self.status_var.set("Stopped" if self.stop_event.is_set() else "Idle")
+        self.status_var.set("Stopped")
 
     # ------------------------------------------------------------------
     # Temperature stream thread (real if available, else simulated)
@@ -570,44 +523,35 @@ class SpringLoaderApp(tb.Window):
             time.sleep(0.1)
 
     # ------------------------------------------------------------------
-    # Load cell stream thread (mass readout)
+    # Load cell stream thread (SINGLE HX711 reader)
     # ------------------------------------------------------------------
     def _loadcell_worker(self) -> None:
+        """
+        Single HX711 reader thread.
+        Reads NET mass (g) from calibrated LoadCell, converts to force (N),
+        pushes to queue for plotting and readout.
+        """
         while self.load_running:
             try:
                 t = time.monotonic() - self.load_t0
-                m = self.sensors.read_mass_g()
-                if m is not None:
-                    self.load_queue.put((t, float(m)))
+
+                m_g = self.sensors.read_mass_g()
+                if m_g is not None:
+                    force_N = (float(m_g) / 1000.0) * 9.80665
+                    self.load_queue.put((t, force_N))
             except Exception:
                 pass
-            time.sleep(0.1)
+
+            time.sleep(0.05)  # ~20 Hz
 
     # ------------------------------------------------------------------
     # GUI thread plot updates
     # ------------------------------------------------------------------
     def _update_plot_from_queue(self) -> None:
-        updated = False
         temp_updated = False
         latest_T: Optional[float] = None
-        latest_mass: Optional[float] = None
-
-        # Drain mechanical data
-        try:
-            while True:
-                t, disp, force = self.data_queue.get_nowait()
-                if t < 0 and (disp != disp or force != force):
-                    tb.dialogs.Messagebox.show_error(
-                        message=getattr(self, "_error_message", "Unknown error"),
-                        title="Acquisition error",
-                    )
-                    break
-                self.time_data.append(float(t))
-                self.disp_data.append(float(disp))
-                self.force_data.append(float(force))
-                updated = True
-        except queue.Empty:
-            pass
+        latest_force: Optional[float] = None
+        force_updated = False
 
         # Drain temperature data
         try:
@@ -620,25 +564,38 @@ class SpringLoaderApp(tb.Window):
         except queue.Empty:
             pass
 
-        # Drain load cell data (latest only for readout)
+        # Drain live FORCE data
         try:
             while True:
-                _lt, mg = self.load_queue.get_nowait()
-                latest_mass = float(mg)
+                lt, fN = self.load_queue.get_nowait()
+                self.force_time_live.append(float(lt))
+                self.force_data_live.append(float(fN))
+                latest_force = float(fN)
+                force_updated = True
         except queue.Empty:
             pass
 
+        # Update readouts
         if latest_T is not None:
             self.temp_readout_var.set(f"{latest_T:0.2f} °C")
 
-        if latest_mass is not None:
-            self.load_readout_var.set(f"{latest_mass:0.1f} g")
+        if latest_force is not None:
+            self.load_readout_var.set(f"{latest_force:0.2f} N")
 
-        if updated:
-            self.line_xt.set_data(self.time_data, self.disp_data)
-            self.line_Ft.set_data(self.time_data, self.force_data)
-            strain, stress = self._compute_stress_strain()
-            self.line_ss.set_data(strain, stress)
+        # Update live force plot (rolling window)
+        if force_updated and len(self.force_time_live) > 1:
+            xmax = self.force_time_live[-1]
+            xmin = max(0.0, xmax - self.force_window_s)
+
+            xs: List[float] = []
+            ys: List[float] = []
+            for x, y in zip(self.force_time_live, self.force_data_live):
+                if x >= xmin:
+                    xs.append(x)
+                    ys.append(y)
+
+            self.line_Ft.set_data(xs, ys)
+            self.ax_Ft.set_xlim(xmin, xmax + 0.5)
 
         # Update temperature LineCollection + rolling window scaling (60 s)
         if temp_updated and len(self.temp_time) > 1:
@@ -663,10 +620,11 @@ class SpringLoaderApp(tb.Window):
             self.ax_Tt.set_xlim(xmin, xmax + 0.5)
             self.ax_Tt.set_ylim(ymin - ypad, ymax + ypad)
 
-        if updated or temp_updated:
-            for ax in (self.ax_xt, self.ax_Ft, self.ax_ss):
-                ax.relim()
-                ax.autoscale_view()
+        if temp_updated or force_updated:
+            # autoscale y for force nicely
+            self.ax_Ft.relim()
+            self.ax_Ft.autoscale_view(scalex=False, scaley=True)
+
             self.canvas.draw_idle()
 
         self.after(50, self._update_plot_from_queue)
@@ -675,7 +633,7 @@ class SpringLoaderApp(tb.Window):
     # Saving / exporting
     # ------------------------------------------------------------------
     def save_csv(self) -> None:
-        if not self.time_data and not self.temp_time:
+        if not self.force_time_live and not self.temp_time:
             self.status_var.set("No data to save")
             return
 
@@ -687,22 +645,21 @@ class SpringLoaderApp(tb.Window):
         if not filename:
             return
 
-        strain, stress = self._compute_stress_strain()
-
         try:
             with open(filename, "w", newline="") as f:
                 w = csv.writer(f)
-                w.writerow(["t [s]", "displacement [m]", "force [N]", "strain [-]", "stress [Pa]"])
-                for i in range(len(self.time_data)):
-                    eps = strain[i] if i < len(strain) else ""
-                    sig = stress[i] if i < len(stress) else ""
-                    w.writerow([self.time_data[i], self.disp_data[i], self.force_data[i], eps, sig])
+
+                # Live force stream
+                w.writerow(["Live Force stream"])
+                w.writerow(["t [s]", "force [N]"])
+                for t, fN in zip(self.force_time_live, self.force_data_live):
+                    w.writerow([t, fN])
 
                 w.writerow([])
                 w.writerow(["Temperature stream"])
                 w.writerow(["t [s]", "T [°C]"])
-                for i in range(len(self.temp_time)):
-                    w.writerow([self.temp_time[i], self.temp_data[i]])
+                for t, T in zip(self.temp_time, self.temp_data):
+                    w.writerow([t, T])
 
             self.status_var.set(f"Saved CSV: {os.path.basename(filename)}")
         except Exception as e:
@@ -726,7 +683,8 @@ class SpringLoaderApp(tb.Window):
         summary = self._compute_summary()
         if summary is None:
             tb.dialogs.Messagebox.show_info(
-                message="Not enough valid stress–strain data to compute summary.\nCheck A/L0 and collect more points.",
+                message="Summary currently uses stress–strain data from full runs.\n"
+                        "Live force plotting is active, but displacement/stress–strain not collected yet.",
                 title="Summary",
             )
             return

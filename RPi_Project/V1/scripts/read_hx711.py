@@ -1,35 +1,34 @@
-# scripts/read_hx711.py
-
+#!/usr/bin/env python3
 from __future__ import annotations
 
 import time
-
-from hardware.motor import MotorController
-from hardware.sensors import Sensors, ForceCal
-from hardware.hx711 import HX711Config
+from hardware.loadcell import LoadCell
 
 
 def main() -> None:
-    motor = MotorController(simulation=True)
-    sensors = Sensors(
-        motor=motor,
-        simulation=False,
-        hx711_cfg=HX711Config(dout_pin=6, sck_pin=5, gain=128),
-        cal=ForceCal(tare_offset_counts=0.0, scale_N_per_count=1.0),
-        avg_samples=10,
-    )
+    lc = LoadCell(simulation=False)
+    print(f"Using calibration: {lc.calibration_path}")
+
+    print("Taring to current... (holder only, no extra load)")
+    ok = lc.tare_to_current()
+    print("Tare OK" if ok else "Tare FAILED")
 
     try:
-        sensors.tare(samples=30)
-        print("Reading force (uncalibrated unless you set scale). Ctrl+C to stop.")
         while True:
-            F = sensors.read_force_N()
-            print(f"{F: .6f} N")
+            m_g = lc.read_mass_g()
+            f_N = lc.read_force_n()
+
+            if m_g is not None and f_N is not None:
+                print(f"{m_g:10.2f} g   {f_N:10.4f} N")
+            else:
+                print("No reading")
+
             time.sleep(0.2)
+
     except KeyboardInterrupt:
         pass
     finally:
-        sensors.close()
+        lc.close()
 
 
 if __name__ == "__main__":
