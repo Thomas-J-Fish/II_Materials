@@ -91,20 +91,20 @@ class SpringLoaderApp(tb.Window):
 
         # Auto fallback: if user asked for motor but device isn't present, simulate motor
         motor_sim = not USE_MOTOR
+        self._motor_warning = ""
         if USE_MOTOR:
             if not os.path.exists("/dev/ttyUSB0"):
                 motor_sim = True
                 self._motor_warning = "Motor port /dev/ttyUSB0 not found → motor simulated"
-            else:
-                self._motor_warning = ""
 
         # Create motor
         self.motor = MotorController(simulation=motor_sim)
 
-        # Create sensors: pass motor_sim (so motor proxy doesn't break), then override loadcell below if requested
+        # Create sensors: pass motor_sim (so motor proxy doesn't break),
+        # then override loadcell below if requested.
         self.sensors = Sensors(self.motor, simulation=motor_sim)
 
-        # Force real loadcell even if motor is simulated
+        # Force REAL loadcell even if motor is simulated
         self._loadcell_warning = ""
         if USE_LOADCELL:
             try:
@@ -115,6 +115,9 @@ class SpringLoaderApp(tb.Window):
             except Exception as e:
                 self._loadcell_warning = f"Load cell unavailable: {e}"
                 self.sensors.loadcell = None  # type: ignore
+        else:
+            # explicitly disable loadcell
+            self.sensors.loadcell = None  # type: ignore
 
         # ---- Experiment control ----
         self.stop_event = threading.Event()
@@ -201,7 +204,7 @@ class SpringLoaderApp(tb.Window):
         msgs = []
         if getattr(self, "_motor_warning", ""):
             msgs.append(self._motor_warning)
-        if self._loadcell_warning:
+        if getattr(self, "_loadcell_warning", ""):
             msgs.append(self._loadcell_warning)
         if msgs:
             self.status_var.set(" | ".join(msgs))
