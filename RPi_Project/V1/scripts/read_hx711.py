@@ -2,7 +2,8 @@
 from __future__ import annotations
 
 import time
-from hardware.loadcell import LoadCell
+
+from V1.hardware.loadcell import LoadCell
 
 
 def main() -> None:
