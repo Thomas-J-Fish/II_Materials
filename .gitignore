@@ -9,9 +9,11 @@ AI_Configs/
 Manim_Attempt/
 Course_Revision/
 Course_Notes/
+**/__pycache__
 
 # Ignore specific Jupyter Notebook files
 Alloy_Design/Alloy Design Proposal.pdf
 Alloy_Design/COSHH AD Weigh Out.doc
 Alloy_Design/COSHH AD Weigh Out.pdf
 Alloy_Design/RA:COSHH Form Template.doc
+**/*.pyc
