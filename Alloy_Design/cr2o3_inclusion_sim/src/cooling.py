@@ -30,7 +30,7 @@ M_2100 ~ 1e-12 m^3 J^-1 s^-1.
 import numpy as np
 
 DEFAULT_SIGMA        = 1.5
-DEFAULT_MOBILITY     = 1e-12
+DEFAULT_MOBILITY     = 3e-14
 DEFAULT_DELTA_T      = 820.0
 DEFAULT_COOLING_RATE = 20.0
 

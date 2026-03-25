@@ -44,14 +44,14 @@ CONFIG = {
  
     # Mobility elevated at 2100 degC (~70x higher than at 1500 degC via Arrhenius,
     # Q ~ 250 kJ/mol). Base value ~3e-13 at 1500 degC -> ~1e-12 at 2100 degC.
-    "mobility":   1e-12,
+    "mobility":   3e-14,
  
     "sigma":      1.5,
  
     "sweep_radii_um":      [2.0, 3.5, 5.0, 7.0, 10.0],
     "sweep_cooling_rates": [5.0, 20.0, 100.0],
  
-    "max_steps":  8000,
+    "max_steps":  200000,
     "min_steps":  500,
     "n_snapshots": 40,
  
@@ -224,7 +224,7 @@ def plot_circularity_vs_radius(sweep_data, cfg, out):
 def plot_circ_vs_step_by_cr(sweep_data, cfg, fixed_cr, out):
     cooling_rates = cfg["sweep_cooling_rates"]
     radii_um      = cfg["sweep_radii_um"]
-    mid_r         = radii_um[len(radii_um) // 2]
+    mid_r         = 10 # or radii_um[len(radii_um) // 2]
  
     fig, axes = plt.subplots(1, 2, figsize=(13, 5))
     fig.patch.set_facecolor(DARK_BG)
