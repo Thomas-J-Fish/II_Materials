@@ -249,6 +249,11 @@ def run_simulation(
     n_fold:              int        = 6,
     save_every:          int        = 100,
     verbose:             bool       = True,
+    T_start_celsius:     float      = 2100.0,
+    cooling_rate:        float      = None,
+    M0:                  float      = 1e-12,
+    sigma:               float      = 1.5,
+    T_solidus_celsius:   float      = 1280.0,
 ) -> tuple:
     """
     Run the Allen-Cahn simulation for n_steps time steps.
@@ -257,27 +262,29 @@ def run_simulation(
     ----------
     phi_init         : initial phase-field array  (Ny, Nx)
     n_steps          : total number of time steps
-    dx               : physical grid spacing in metres (used for reporting only;
-                       the solver runs in dimensionless pixel units)
-    dt               : dimensionless time step.  If None, the maximum stable
-                       value is computed automatically.
-    interface_width  : interface half-width in grid cells (used for epsilon, W)
+    dx               : physical grid spacing in metres
+    dt               : dimensionless time step.  If None, computed automatically.
+    interface_width  : interface half-width in grid cells
     bc               : boundary condition
     anisotropy_strength : 0 = isotropic
     n_fold           : anisotropy symmetry order
     save_every       : save a snapshot every this many steps
     verbose          : print progress
+    T_start_celsius  : melt temperature at t=0 [°C].  Used for Arrhenius mobility.
+    cooling_rate     : dT/dt [°C/s].  If None, mobility is held constant at M0.
+    M0               : reference mobility at T_start_celsius [m^3 J^-1 s^-1].
+    sigma            : interfacial energy [J m^-2].  Used for physical time conversion.
 
     Returns
     -------
     phi_final   : (Ny, Nx) array — final phase field
     snapshots   : list of (step_index, phi) tuples — evolution history
-    metrics     : dict — scalar metrics recorded at each snapshot
-                  keys: 'steps', 'area', 'perimeter', 'circularity'
+    metrics     : dict with keys 'steps', 'area', 'perimeter', 'circularity'
     """
+    from src.cooling import mobility_at_T
+
     epsilon, W, mobility = compute_ac_parameters(dx, interface_width)
 
-    # Auto time step (dimensionless)
     if dt is None:
         dt = max_stable_dt(dx, mobility, epsilon)
         if verbose:
@@ -290,19 +297,55 @@ def run_simulation(
                 print(f"  Requested dt too large; clipped to dt = {dt:.4e}")
 
     if verbose:
-        print(f"  epsilon = {epsilon:.4f},  W = {W:.4f},  M = {mobility:.4f}")
+        mode = f"Arrhenius (CR={cooling_rate}°C/s)" if cooling_rate is not None else "constant"
+        print(f"  epsilon = {epsilon:.4f},  W = {W:.4f},  mobility mode = {mode}")
         print(f"  Running {n_steps} steps  (saving every {save_every})")
 
     phi = phi_init.copy()
     snapshots = [(0, phi.copy())]
     metrics   = {
-        "steps":       [0],
-        "area":        [_area(phi)],
-        "perimeter":   [_perimeter(phi)],
-        "circularity": [_circularity(phi)],
+        "steps":           [0],
+        "area":            [_area(phi)],
+        "perimeter":       [_perimeter(phi)],
+        "circularity":     [_circularity(phi)],
+        "physical_time_s": [0.0],
     }
 
-    for i in range(1, n_steps + 1):
+    # Physical time accumulator.
+    # Each dimensionless step advances physical time by:
+    #   delta_t_phys = dt * dx^2 / (M_eff * sigma)
+    # where M_eff is the Arrhenius mobility at the current temperature.
+    # When cooling_rate is None, M_eff = M0 (constant) and n_steps is the
+    # hard limit.
+    #
+    # When cooling_rate is not None, the loop exits as soon as the
+    # accumulated physical time reaches t_solid = delta_T / cooling_rate.
+    # n_steps acts only as a safety ceiling — the loop will always exit
+    # earlier via the solidification break for physically reasonable parameters.
+    # This means CR=5 naturally runs far more steps than CR=100, giving it
+    # proportionally more shape relaxation, which is the correct physics.
+    cumulative_t_phys = 0.0
+    t_solid = ((T_start_celsius - T_solidus_celsius) / cooling_rate
+               if cooling_rate is not None else float('inf'))
+
+    i = 0
+    while i < n_steps:
+        i += 1
+
+        # Compute physical time increment for this step using current M(T).
+        # The SOLVER mobility is always the dimensionless value (1.0 from
+        # compute_ac_parameters) — Arrhenius only affects the time axis.
+        if cooling_rate is not None:
+            T_current    = T_start_celsius - cooling_rate * cumulative_t_phys
+            T_current    = max(T_current, T_solidus_celsius)
+            M_eff        = mobility_at_T(T_current, M0, T_ref_celsius=T_start_celsius)
+            delta_t_phys = dt * dx**2 / (M_eff * sigma)
+        else:
+            delta_t_phys = dt * dx**2 / (M0 * sigma)
+
+        cumulative_t_phys += delta_t_phys
+
+        # Advance the phase field — always using dimensionless mobility = 1.0
         phi = step(phi, dt, dx, epsilon, W, mobility,
                    bc, anisotropy_strength, n_fold)
 
@@ -312,13 +355,26 @@ def run_simulation(
             metrics["area"].append(_area(phi))
             metrics["perimeter"].append(_perimeter(phi))
             metrics["circularity"].append(_circularity(phi))
+            metrics["physical_time_s"].append(cumulative_t_phys)
 
             if verbose:
                 print(
                     f"  Step {i:6d}/{n_steps}  |  "
-                    f"area = {metrics['area'][-1]:.2e} px²  |  "
+                    f"t_phys = {cumulative_t_phys:.2f}s  |  "
                     f"circularity = {metrics['circularity'][-1]:.3f}"
                 )
+
+        # Stop when the physical solidification window is exhausted
+        if cumulative_t_phys >= t_solid:
+            # Save a final snapshot if not already on a save_every boundary
+            if i % save_every != 0:
+                snapshots.append((i, phi.copy()))
+                metrics["steps"].append(i)
+                metrics["area"].append(_area(phi))
+                metrics["perimeter"].append(_perimeter(phi))
+                metrics["circularity"].append(_circularity(phi))
+                metrics["physical_time_s"].append(cumulative_t_phys)
+            break
 
     return phi, snapshots, metrics
 
