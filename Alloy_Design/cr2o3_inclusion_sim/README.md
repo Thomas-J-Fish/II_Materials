@@ -1,6 +1,6 @@
 # Cr₂O₃ Inclusion Shape Relaxation — Allen-Cahn Phase-Field Simulation
 
-A Python simulation modelling how chromium oxide (Cr₂O₃) inclusions evolve their shape while suspended in a liquid Fe-28wt%Cr-14wt%Ni-8wt%Mo alloy melt during casting. Produced as part of a Part II Materials Science project at the University of Cambridge.
+A Python simulation modelling how chromium oxide (Cr₂O₃) inclusions evolve their shape while suspended in a liquid Fe-28wt%Cr-14wt%Ni-8wt%Mo alloy melt during casting.
 
 ---
 
