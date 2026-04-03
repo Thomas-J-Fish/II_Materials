@@ -28,10 +28,8 @@ from skimage.io import imread
 from skimage.color import rgb2gray
 from skimage.filters import threshold_otsu
 
-
-# ---------------------------------------------------------------------------
 # Smooth step: tanh interface profile
-# ---------------------------------------------------------------------------
+# -----------------------------------
 
 def _apply_tanh_interface(mask: np.ndarray, interface_width: float) -> np.ndarray:
     """
@@ -57,10 +55,8 @@ def _apply_tanh_interface(mask: np.ndarray, interface_width: float) -> np.ndarra
     phi = 0.5 * (1.0 + np.tanh(signed_dist / interface_width))
     return phi
 
-
-# ---------------------------------------------------------------------------
 # Geometry 1: irregular polygon
-# ---------------------------------------------------------------------------
+# -----------------------------
 
 def irregular_polygon(
     grid_shape: tuple,
@@ -125,10 +121,8 @@ def irregular_polygon(
 
     return _apply_tanh_interface(mask, interface_width)
 
-
-# ---------------------------------------------------------------------------
-# Geometry 2: ellipse (reference case)
-# ---------------------------------------------------------------------------
+# Geometry 2: ellipse
+# -------------------
 
 def ellipse(
     grid_shape: tuple,
@@ -175,10 +169,8 @@ def ellipse(
 
     return _apply_tanh_interface(mask, interface_width)
 
-
-# ---------------------------------------------------------------------------
 # Geometry 3: from micrograph image
-# ---------------------------------------------------------------------------
+# ---------------------------------
 
 def from_image(
     image_path: str,

@@ -29,29 +29,34 @@ CONFIG = {
     "T_solidus":  1280.0,
     "mobility":   1e-13,
     "sigma":      1.5,
-    "sweep_radii_um":      [2.0, 3.5, 5.0, 7.0, 10.0],
-    "sweep_cooling_rates": [5.0, 20.0, 100.0, 400.0],
-    "max_steps":  8000,
+    "sweep_radii_um":      [1.0, 2.0, 3.5, 5.0, 7.0, 10.0],
+    "sweep_cooling_rates": [5.0, 20.0, 50.0, 100.0, 200.0],
+    "max_steps":  100000,
     "min_steps":  500,
-    "n_snapshots": 40,
+    "n_snapshots": 50000,
     "output_dir": "outputs",
-    "micrograph_path": None,
+    "micrograph_path": "inputs/micrograph.png",
 }
 
-CR_COLOURS = {5.0: "#4fc3f7", 20.0: "#f48fb1", 100.0: "#a5d6a7"}
-RADIUS_COLOURS = ["#ffcc66", "#ce93d8", "#80cbc4", "#ef9a9a", "#bcaaa4"]
-DARK_BG = "#1a1a1a"; PANEL_BG = "#242424"; SPINE_COL = "#555555"
-TICK_COL = "#aaaaaa"; TITLE_COL = "#dddddd"; TEXT_COL = "#cccccc"
+CR_COLOURS = {
+    5.0:   "#4fc3f7",   # blue
+    10.0:  "#81d4fa",   # light blue
+    20.0:  "#f48fb1",   # pink
+    50.0:  "#ffcc80",   # orange
+    100.0: "#a5d6a7",   # green
+    200.0: "#ce93d8",   # purple
+    400.0: "#ef9a9a",   # red
+}
+RADIUS_COLOURS = ["#ffcc66", "#ce93d8", "#80cbc4", "#ef9a9a", "#bcaaa4", "#c03b0e"]
 
 def _style_ax(ax):
-    ax.set_facecolor(PANEL_BG); ax.tick_params(colors=TICK_COL)
-    for side in ["bottom", "left"]: ax.spines[side].set_edgecolor(SPINE_COL)
-    ax.spines["top"].set_visible(False); ax.spines["right"].set_visible(False)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
 
 def _savefig(fig, path, out_dir):
     os.makedirs(out_dir, exist_ok=True)
     full = os.path.join(out_dir, path)
-    fig.savefig(full, dpi=150, bbox_inches="tight", facecolor=fig.get_facecolor())
+    fig.savefig(full, dpi=1000, bbox_inches="tight")
     plt.close(fig); print(f"  Saved -> {full}")
 
 def build_inclusion(cfg, radius_px, grid_size=None, seed=None):
@@ -123,7 +128,7 @@ def run_sweep(cfg):
 
 def plot_circularity_vs_radius(sweep_data, cfg, out):
     cooling_rates = cfg["sweep_cooling_rates"]; radii_um = cfg["sweep_radii_um"]
-    fig, ax = plt.subplots(figsize=(7, 5)); fig.patch.set_facecolor(DARK_BG); _style_ax(ax)
+    fig, ax = plt.subplots(figsize=(7, 5)); _style_ax(ax)
     init_r, init_c = [], []
     for r_um in radii_um:
         d = sweep_data[cooling_rates[0]].get(r_um)
@@ -136,21 +141,21 @@ def plot_circularity_vs_radius(sweep_data, cfg, out):
             if d: rs.append(r_um); cfs.append(d["circ_final"])
         ax.plot(rs, cfs, color=col, lw=2, marker="o", ms=6, label=f"{cr} °C/s", zorder=3)
     ax.axhline(1.0, color="#ffffff", lw=0.6, ls=":", alpha=0.35)
-    ax.set_xlabel("Inclusion radius  (µm)", color=TICK_COL, fontsize=10)
-    ax.set_ylabel("Circularity  (4πA/P²,  circle = 1)", color=TICK_COL, fontsize=10)
-    ax.set_title("Final circularity vs inclusion size", color=TITLE_COL, fontsize=11, pad=6)
-    ax.legend(fontsize=8, facecolor="#333", labelcolor=TEXT_COL, framealpha=0.85)
+    ax.grid(True)
+    ax.set_xlabel("Inclusion radius  (µm)", fontsize=10)
+    ax.set_ylabel("Circularity  (4πA/P²,  circle = 1)", fontsize=10)
+    ax.set_title("Final circularity vs inclusion size", fontsize=11, pad=6)
+    ax.legend(fontsize=8, framealpha=0.85)
     fig.text(0.5, -0.04, f"M = {cfg['mobility']:.0e} m³J⁻¹s⁻¹  |  σ = {cfg['sigma']} Jm⁻²  |  δT = {cfg['delta_T']:.0f} °C",
-        ha="center", color="#777", fontsize=8)
-    fig.suptitle("Cr₂O₃ inclusion shape relaxation — size and cooling rate dependence",
-        color="#eee", fontsize=12, y=1.02)
+        ha="center", fontsize=8)
+    fig.suptitle("Cr₂O₃ inclusion shape relaxation — size and cooling rate dependence", fontsize=12, y=1.02)
     plt.tight_layout(); _savefig(fig, "circularity_vs_radius.png", out)
 
 def plot_circ_vs_step_by_cr(sweep_data, cfg, fixed_cr, out):
     cooling_rates = cfg["sweep_cooling_rates"]; radii_um = cfg["sweep_radii_um"]
     mid_r = radii_um[len(radii_um) // 2]
     dx_m = cfg["dx_m"]
-    fig, axes = plt.subplots(1, 2, figsize=(13, 5)); fig.patch.set_facecolor(DARK_BG)
+    fig, axes = plt.subplots(1, 2, figsize=(13, 5))
     for ax in axes: _style_ax(ax)
     for cr in cooling_rates:
         d = sweep_data[cr].get(mid_r)
@@ -162,19 +167,22 @@ def plot_circ_vs_step_by_cr(sweep_data, cfg, fixed_cr, out):
         axes[1].plot(times, circs, color=col, lw=2, label=f"{cr} °C/s")
     for ax, xl in zip(axes, ["Simulation step", "Physical time  (s)"]):
         ax.axhline(1.0, color="#ffffff", lw=0.6, ls=":", alpha=0.35)
-        ax.set_ylabel("Circularity", color=TICK_COL, fontsize=10)
-        ax.set_xlabel(xl, color=TICK_COL, fontsize=10)
-        ax.legend(fontsize=8, facecolor="#333", labelcolor=TEXT_COL, framealpha=0.85)
-    axes[0].set_title(f"Circularity evolution — R = {mid_r} µm  (by cooling rate)", color=TITLE_COL, fontsize=11, pad=6)
-    axes[1].set_title(f"Circularity vs physical time — R = {mid_r} µm", color=TITLE_COL, fontsize=11, pad=6)
-    fig.suptitle("Shape relaxation dynamics — cooling rate dependence", color="#eee", fontsize=12, y=1.02)
+        ax.set_ylabel("Circularity", fontsize=10)
+        ax.set_xlabel(xl, fontsize=10)
+        ax.legend(fontsize=8, framealpha=0.85)
+    axes[0].set_title(f"Circularity evolution — R = {mid_r} µm  (by cooling rate)", fontsize=11, pad=6)
+    axes[0].grid(True)
+    axes[1].set_title(f"Circularity vs physical time — R = {mid_r} µm", fontsize=11, pad=6)
+    axes[1].grid(True)
+    axes[1].set_xlim(0.0,60.0)
+    fig.suptitle("Shape relaxation dynamics — cooling rate dependence", fontsize=12, y=1.02)
     plt.tight_layout(); _savefig(fig, "circ_vs_step_by_cooling_rate.png", out)
 
 def plot_circ_vs_step_by_radius(sweep_data, cfg, out):
     cooling_rates = cfg["sweep_cooling_rates"]; radii_um = cfg["sweep_radii_um"]
-    fixed_cr = cooling_rates[1]
+    fixed_cr = cooling_rates[2]
     dx_m = cfg["dx_m"]
-    fig, axes = plt.subplots(1, 2, figsize=(13, 5)); fig.patch.set_facecolor(DARK_BG)
+    fig, axes = plt.subplots(1, 2, figsize=(13, 5))
     for ax in axes: _style_ax(ax)
     for r_um, col in zip(radii_um, RADIUS_COLOURS):
         d = sweep_data[fixed_cr].get(r_um)
@@ -185,12 +193,15 @@ def plot_circ_vs_step_by_radius(sweep_data, cfg, out):
         axes[1].plot(times, circs, color=col, lw=2, label=f"{r_um} µm")
     for ax, xl in zip(axes, ["Simulation step", "Physical time  (s)"]):
         ax.axhline(1.0, color="#ffffff", lw=0.6, ls=":", alpha=0.35)
-        ax.set_ylabel("Circularity", color=TICK_COL, fontsize=10)
-        ax.set_xlabel(xl, color=TICK_COL, fontsize=10)
-        ax.legend(fontsize=8, facecolor="#333", labelcolor=TEXT_COL, framealpha=0.85, title="Radius", title_fontsize=8)
-    axes[0].set_title(f"Circularity evolution — CR = {fixed_cr} °C/s  (by radius)", color=TITLE_COL, fontsize=11, pad=6)
-    axes[1].set_title(f"Circularity vs physical time — CR = {fixed_cr} °C/s", color=TITLE_COL, fontsize=11, pad=6)
-    fig.suptitle("Shape relaxation dynamics — inclusion size dependence", color="#eee", fontsize=12, y=1.02)
+        ax.set_ylabel("Circularity", fontsize=10)
+        ax.set_xlabel(xl, fontsize=10)
+        ax.legend(fontsize=8, framealpha=0.85, title="Radius", title_fontsize=8)
+    axes[0].set_title(f"Circularity evolution — CR = {fixed_cr} °C/s  (by radius)", fontsize=11, pad=6)
+    axes[0].grid(True)
+    axes[1].set_title(f"Circularity vs physical time — CR = {fixed_cr} °C/s", fontsize=11, pad=6)
+    axes[1].grid(True)
+    axes[1].set_xlim(0.0,12.5)
+    fig.suptitle("Shape relaxation dynamics — inclusion size dependence", fontsize=12, y=1.02)
     plt.tight_layout(); _savefig(fig, "circ_vs_step_by_radius.png", out)
 
 def plot_shape_comparisons(sweep_data, cfg, dx_um, out):
@@ -201,7 +212,7 @@ def plot_shape_comparisons(sweep_data, cfg, dx_um, out):
         valid = [(r, sweep_data[cr][r]) for r in radii_um if sweep_data[cr].get(r)]
         if not valid: continue
         n = len(valid)
-        fig, axes = plt.subplots(n, 2, figsize=(7, 3.2 * n)); fig.patch.set_facecolor(DARK_BG)
+        fig, axes = plt.subplots(n, 2, figsize=(7, 3.2 * n))
         if n == 1: axes = [axes]
         for row, (r_um, d) in enumerate(valid):
             for col_idx, (phi, label) in enumerate([
@@ -210,13 +221,11 @@ def plot_shape_comparisons(sweep_data, cfg, dx_um, out):
                 ax = axes[row][col_idx]; grid = d["grid"]; extent = [0, grid*dx_um, 0, grid*dx_um]
                 ax.imshow(phi, origin="lower", cmap=oxide_cmap, vmin=0, vmax=1,
                           extent=extent, interpolation="bilinear")
-                ax.set_facecolor(DARK_BG); ax.tick_params(colors=TICK_COL, labelsize=7)
-                for sp in ax.spines.values(): sp.set_edgecolor(SPINE_COL)
-                ax.set_title(f"R = {r_um} µm — {label}", color=TITLE_COL, fontsize=9, pad=4)
-                ax.set_xlabel("µm", color=TICK_COL, fontsize=8); ax.set_ylabel("µm", color=TICK_COL, fontsize=8)
+                ax.tick_params(labelsize=7)
+                ax.set_title(f"R = {r_um} µm — {label}", fontsize=9, pad=4)
+                ax.set_xlabel("µm", fontsize=8); ax.set_ylabel("µm", fontsize=8)
         fig.suptitle(f"Inclusion shape relaxation — cooling rate {cr} °C/s\n"
-            f"δT = {cfg['delta_T']:.0f} °C  |  t_solid = {cfg['delta_T']/cr:.1f} s  |  M = {cfg['mobility']:.0e} m³J⁻¹s⁻¹",
-            color="#eee", fontsize=11, y=1.01)
+            f"δT = {cfg['delta_T']:.0f} °C  |  t_solid = {cfg['delta_T']/cr:.1f} s  |  M = {cfg['mobility']:.0e} m³J⁻¹s⁻¹", fontsize=11, y=1.01)
         plt.tight_layout(); _savefig(fig, f"shape_comparison_CR{int(cr):03d}.png", out)
 
 def main():

@@ -51,8 +51,8 @@ treats M_phys as a parameter to vary, allowing you to ask:
 
 Typical casting parameters for this alloy
 ------------------------------------------
-  Liquidus temperature:   ~1380 °C   (estimated from CALPHAD for this composition)
-  Solidus temperature:    ~1280 °C   (estimated)
+  Liquidus temperature:   ~1380 °C   (estimated from literature)
+  Solidus temperature:    ~1280 °C   (estimated from literature)
   Mushy zone width:       ~100 °C
   Cooling rate (casting): 1 – 20 °C/s  (investment/sand casting)
   Cooling rate (quench):  100 – 1000 °C/s
@@ -60,10 +60,8 @@ Typical casting parameters for this alloy
 
 import numpy as np
 
-
-# ---------------------------------------------------------------------------
 # Default physical parameters — override in CONFIG
-# ---------------------------------------------------------------------------
+# ------------------------------------------------
 
 DEFAULT_SIGMA        = 1.5     # Cr2O3/melt interfacial energy  [J m^-2]
 DEFAULT_MOBILITY     = 3e-13    # Interface mobility  [m^3 J^-1 s^-1]  (mid-range estimate)
@@ -71,9 +69,9 @@ DEFAULT_DELTA_T      = 100.0   # Mushy zone width  [°C]
 DEFAULT_COOLING_RATE = 5.0     # Cooling rate  [°C s^-1]  (moderate investment casting)
 
 
-# ---------------------------------------------------------------------------
+
 # Core calculation
-# ---------------------------------------------------------------------------
+# ----------------
 
 def dimless_time_budget(
     dx_m:          float,
@@ -89,8 +87,8 @@ def dimless_time_budget(
     Parameters
     ----------
     dx_m          : grid spacing in metres
-    cooling_rate  : dT/dt in °C s^-1  (positive value)
-    delta_T       : mushy zone width in °C  (liquidus - solidus)
+    cooling_rate  : dT/dt in deg C s^-1  (positive value)
+    delta_T       : mushy zone width in deg C  (liquidus - solidus)
     mobility      : physical interface mobility  [m^3 J^-1 s^-1]
     sigma         : interfacial energy  [J m^-2]
 
@@ -99,7 +97,7 @@ def dimless_time_budget(
     t_dimless : float
         Dimensionless time available for shape relaxation.
     """
-    t_physical  = delta_T / cooling_rate                  # seconds available
+    t_physical  = delta_T / cooling_rate
     t_dimless   = t_physical * mobility * sigma / dx_m**2
     return t_dimless
 

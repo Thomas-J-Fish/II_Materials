@@ -8,7 +8,7 @@ A Python simulation modelling how chromium oxide (Cr₂O₃) inclusions evolve t
 
 During alloy preparation, the chromium feedstock carries a native Cr₂O₃ oxide layer. When the feedstock is added to the melt at ~2100 °C, fragments of this oxide spall off and become suspended in the liquid alloy as solid inclusions with irregular, angular shapes. Because the casting temperature is not high enough to dissolve the oxide, these inclusions persist into the final microstructure.
 
-While the alloy remains liquid, the oxide–melt interface has a positive interfacial energy (σ ≈ 1.5 J m⁻²). The system minimises its total energy by reducing the interfacial area — meaning the inclusion tends to round its sharp corners and evolve toward a more circular shape. When the alloy solidifies, the inclusion shape is frozen permanently. The extent of rounding depends on:
+While the alloy remains liquid, the oxide–melt interface has a positive interfacial energy (σ ≈ 1.5 J m⁻²). The system minimises its total energy by reducing the interfacial area - meaning the inclusion tends to round its sharp corners and evolve toward a more circular shape. When the alloy solidifies, the inclusion shape is frozen permanently. The extent of rounding depends on:
 
 - **Inclusion size**: larger inclusions take longer to round (relaxation time τ ∝ R²)
 - **Cooling rate**: faster cooling reaches solidification sooner, freezing the shape earlier
@@ -80,7 +80,7 @@ All tunable parameters are in the `CONFIG` block in `main.py`.
 | Key | Default | Description |
 |---|---|---|
 | `grid_size` | `256` | Simulation grid pixels per side. Larger = higher resolution but slower. |
-| `dx_m` | `1.34e-7` | Physical size of one pixel in metres. Derived from your SEM scale bar: 0.05 mm / 374 px. |
+| `dx_m` | `1.34e-7` | Physical size of one pixel in metres. Derived from SEM scale bar: 0.05 mm / 374 px. |
 
 ### Inclusion geometry
 
