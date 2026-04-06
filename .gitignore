@@ -1,7 +1,7 @@
 # Ignore specific folders (recursively)
 Cloned_C1/
-AlloyDesign/CALPHAD_Analysis/
-AlloyDesign/Miscellaneous/
+Alloy_Design/CALPHAD_Analysis/
+Alloy_Design/Miscellaneous/
 Formal_Report/
 Literature_Review/
 Materials_Manufacturing_Project/
