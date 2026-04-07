@@ -61,7 +61,6 @@ Typical casting parameters for this alloy
 import numpy as np
 
 # Default physical parameters — override in CONFIG
-# ------------------------------------------------
 
 DEFAULT_SIGMA        = 1.5     # Cr2O3/melt interfacial energy  [J m^-2]
 DEFAULT_MOBILITY     = 3e-13    # Interface mobility  [m^3 J^-1 s^-1]  (mid-range estimate)
