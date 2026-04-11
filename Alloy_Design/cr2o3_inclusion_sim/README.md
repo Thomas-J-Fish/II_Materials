@@ -32,15 +32,15 @@ Two concurrent microstructural features are proposed to explain the observed bri
 
 #### Critical flaw size — confirming the hypothesis
 
-Using the Irwin fracture criterion with geometry factor Y = 1:
+Using the Irwin fracture criterion with geometry factor Y = 1.12:
 
 $$a_c = \frac{1}{\pi} \left(\frac{K_{Ic}}{Y \sigma_f}\right)^2$$
 
 For K_Ic = 8 MPa√m and σ_f = 550 MPa:
 
-$$a_c = \frac{1}{\pi} \left(\frac{8}{550}\right)^2 = 6.74 \times 10^{-5}\ \text{m} \approx 67\ \mu\text{m (half-length)}$$
+$$a_c = \frac{1.12}{\pi} \left(\frac{8}{550}\right)^2 = 6.74 \times 10^{-5}\ \text{m} \approx 54\ \mu\text{m}$$
 
-A total crack length of ~134 µm is consistent with a string of closely spaced inclusions when Y > 1 (as expected for an embedded or surface crack). The hypothesis that a 50 µm cluster of touching inclusions drove fracture at 550 MPa is internally consistent with K_Ic at the lower end of the sigma-phase range.
+A surface crack length of ~54 µm is consistent with a string of closely spaced inclusions. The hypothesis that a 50 µm cluster of touching inclusions drove fracture at 550 MPa is internally consistent with K_Ic at the lower end of the sigma-phase range.
 
 ---
 
