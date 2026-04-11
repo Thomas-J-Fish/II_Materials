@@ -95,7 +95,7 @@ The crossover condition τ ~ t_solid identifies the physically interesting regim
 
 Initial (spalled, angular) and final (relaxed) inclusion shapes across the full size range, at a representative fast cooling rate. Smaller inclusions round substantially; larger inclusions show only partial rounding within the available solidification window.
 
-<img src="outputs/shape_comparison_CR100.png" width="200">
+<img src="outputs/shape_comparison_CR100.png" width="600">
 
 ---
 
