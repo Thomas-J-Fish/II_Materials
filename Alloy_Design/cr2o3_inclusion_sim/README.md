@@ -10,8 +10,6 @@ During alloy preparation, the chromium feedstock carries a native Cr₂O₃ oxid
 
 While the alloy is liquid, interfacial energy (σ ≈ 1.5 J m⁻²) drives the inclusion toward a more circular shape. The extent of rounding before solidification freezes the shape depends on three competing factors: inclusion size (τ ∝ R²), cooling rate (faster cooling = less time), and temperature (mobility M follows Arrhenius, dropping ~800× between 2100 °C and 1280 °C).
 
-## Motivation and Hypothesis
-
 ## Fracture mechanics analysis and alloy toughness
 
 ### Experimental observation
