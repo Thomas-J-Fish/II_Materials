@@ -56,7 +56,7 @@ M₀ is the mobility at T_melt (set in CONFIG). With Q = 250 kJ/mol, M at the so
 C = 4πA / P²
 ```
 
-Area A is the pixel count inside the φ = 0.5 contour. Perimeter P counts pixel-face transitions between inside and outside pixels. This is identical to what ImageJ computes on a thresholded SEM image. A perfect discrete circle on a square grid gives C ≈ 0.63–0.65 rather than 1.0 due to the staircase boundary — this ceiling applies to both simulation and experimental measurements, making them directly comparable.
+Area A is the pixel count inside the φ = 0.5 contour. Perimeter P counts pixel-face transitions between inside and outside pixels. This is identical to what ImageJ computes on a thresholded SEM image. A perfect discrete circle on a square grid gives C ≈ 0.63–0.65 rather than 1.0 due to the staircase boundary, this ceiling applies to both simulation and experimental measurements making them directly comparable.
 
 ### Relaxation time scale
 
@@ -121,7 +121,7 @@ The key summary plot. Each curve represents a different cooling rate; the dashed
 
 1. **Smaller inclusions are more circular** at every cooling rate, consistent with τ ∝ R² kinetics.
 2. **Slower cooling rates produce higher final circularity** at every size, because more time is spent in the high-mobility temperature regime near the melt.
-3. **The curves fan out with increasing radius**, meaning cooling rate becomes progressively more discriminating for larger inclusions. For the smallest inclusions (2 µm), even the fastest cooling rate (200 °C/s) allows near-complete rounding because τ ≈ 3 s is short relative to t_solid ≈ 4 s. For 10 µm inclusions, final circularity ranges from 0.55 (5 °C/s) down to 0.27 (200 °C/s) — a clear, measurable difference that could in principle be read from experimental micrographs.
+3. **The curves fan out with increasing radius**, meaning cooling rate becomes progressively more discriminating for larger inclusions. For the smallest inclusions (2 µm), even the fastest cooling rate (200 °C/s) allows near-complete rounding because τ ≈ 3 s is short relative to t_solid ≈ 4 s. For 10 µm inclusions, final circularity ranges from 0.55 (5 °C/s) down to 0.27 (200 °C/s), a measurable difference that could in principle be read from experimental micrographs.
 
 <img src="outputs/circularity_vs_radius.png" width="600">
 
@@ -131,11 +131,11 @@ The key summary plot. Each curve represents a different cooling rate; the dashed
 
 ## Interpretation
 
-The simulation supports the hypothesis that the dark spots observed in the microstructure are spalled Cr₂O₃ fragments rather than precipitates formed during solidification. Precipitates would form with shapes controlled by crystal growth kinetics (typically dendritic or faceted) and would not show the size-dependent rounding trend. The observed morphology — smaller inclusions more circular, larger ones more angular — is a kinetic signature of inclusions that were present in the liquid melt and had partial but incomplete time to relax under interfacial energy minimisation.
+The simulation supports the hypothesis that the dark spots observed in the microstructure are spalled Cr₂O₃ fragments rather than precipitates formed during solidification. Precipitates would form with shapes controlled by crystal growth kinetics (typically dendritic or faceted) and would not show the size-dependent rounding trend. The observed morphology (smaller inclusions more circular, larger ones more angular) is a kinetic signature of inclusions that were present in the liquid melt and had partial but incomplete time to relax under interfacial energy minimisation.
 
 The Arrhenius correction reveals that the majority of rounding occurs in the first few seconds at near-melt temperatures. By 1600 °C the mobility has already dropped tenfold, and by 1400 °C it is nearly negligible. This means the 10-second hold at 2100 °C before cooling has a disproportionate influence on final inclusion shape compared to the subsequent slow cool.
 
-Quantitative comparison with measured circularity values from SEM image analysis would allow M₀ to be estimated for this system — a measurement that, to our knowledge, has not been directly reported in the literature for Cr₂O₃ in Fe-Cr-Ni-Mo melts.
+Quantitative comparison with measured circularity values from SEM image analysis would allow M₀ to be estimated for this system, a measurement that to our knowledge has not been directly reported in the literature for Cr₂O₃ in Fe-Cr-Ni-Mo melts.
 
 ---
 
