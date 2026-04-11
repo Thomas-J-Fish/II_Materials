@@ -64,14 +64,6 @@ Area A is the pixel count inside the φ = 0.5 contour. Perimeter P counts pixel-
 τ = R² / (M₀ × σ)
 ```
 
-The crossover condition τ ~ t_solid identifies the physically interesting regime where partial rounding occurs. At M₀ = 1×10⁻¹³ m³ J⁻¹ s⁻¹:
-
-| R | τ | Crossover cooling rate |
-|---|---|---|
-| 2 µm | 27 s | ~30 °C/s |
-| 5 µm | 167 s | ~5 °C/s |
-| 10 µm | 667 s | ~1.2 °C/s |
-
 ---
 
 ## Key parameters
@@ -95,13 +87,15 @@ The crossover condition τ ~ t_solid identifies the physically interesting regim
 
 Initial (spalled, angular) and final (relaxed) inclusion shapes across the full size range, at a representative fast cooling rate. Smaller inclusions round substantially; larger inclusions show only partial rounding within the available solidification window.
 
+<img src="inputs/example.png" width="600">
+
 <img src="outputs/shape_comparison_CR100.png" width="600">
 
 ---
 
 ### Circularity vs physical time — size dependence
 
-At a fixed cooling rate of 50 °C/s, inclusions of different radii follow the expected R² scaling: 2 µm inclusions (purple) round rapidly within ~2 s, while 10 µm inclusions (brown) are still evolving slowly at the end of the solidification window (~16 s). The left panel shows that all runs use the same number of solver steps but the physical time axis (right) correctly reflects the R²-dependent kinetics.
+At a fixed cooling rate of 50 °C/s, inclusions of different radii follow the expected R² scaling: 2 µm inclusions (purple) round rapidly within ~2 s, while 10 µm inclusions (brown) are still evolving slowly at the end of the solidification window (~12 s). The left panel shows that all runs use the same number of solver steps but the physical time axis (right) correctly reflects the R²-dependent kinetics.
 
 ![Circularity vs time by radius](outputs/circ_vs_step_by_radius.png)
 
@@ -124,8 +118,6 @@ The key summary plot. Each curve represents a different cooling rate; the dashed
 3. **The curves fan out with increasing radius**, meaning cooling rate becomes progressively more discriminating for larger inclusions. For the smallest inclusions (2 µm), even the fastest cooling rate (200 °C/s) allows near-complete rounding because τ ≈ 3 s is short relative to t_solid ≈ 4 s. For 10 µm inclusions, final circularity ranges from 0.55 (5 °C/s) down to 0.27 (200 °C/s), a measurable difference that could in principle be read from experimental micrographs.
 
 <img src="outputs/circularity_vs_radius.png" width="600">
-
-<img src="inputs/micrograph.png" width="600">
 
 ---
 
