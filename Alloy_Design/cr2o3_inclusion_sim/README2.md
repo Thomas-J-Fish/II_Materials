@@ -123,9 +123,9 @@ The key summary plot. Each curve represents a different cooling rate; the dashed
 2. **Slower cooling rates produce higher final circularity** at every size, because more time is spent in the high-mobility temperature regime near the melt.
 3. **The curves fan out with increasing radius**, meaning cooling rate becomes progressively more discriminating for larger inclusions. For the smallest inclusions (2 µm), even the fastest cooling rate (200 °C/s) allows near-complete rounding because τ ≈ 3 s is short relative to t_solid ≈ 4 s. For 10 µm inclusions, final circularity ranges from 0.55 (5 °C/s) down to 0.27 (200 °C/s) — a clear, measurable difference that could in principle be read from experimental micrographs.
 
-![Final circularity vs radius](outputs/circularity_vs_radius.png)
+<img src="outputs/circularity_vs_radius.png" width="600">
 
-![Micrograph](inputs/micrograph.png)
+<img src="inputs/micrograph.png" width="600">
 
 ---
 
