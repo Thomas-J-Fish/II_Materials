@@ -95,7 +95,7 @@ The crossover condition τ ~ t_solid identifies the physically interesting regim
 
 Initial (spalled, angular) and final (relaxed) inclusion shapes across the full size range, at a representative fast cooling rate. Smaller inclusions round substantially; larger inclusions show only partial rounding within the available solidification window.
 
-![Shape comparison at 100 °C/s](shape_comparison_CR100.png)
+![Shape comparison at 100 °C/s](outputs/shape_comparison_CR100.png)
 
 ---
 
@@ -103,7 +103,7 @@ Initial (spalled, angular) and final (relaxed) inclusion shapes across the full 
 
 At a fixed cooling rate of 50 °C/s, inclusions of different radii follow the expected R² scaling: 2 µm inclusions (purple) round rapidly within ~2 s, while 10 µm inclusions (brown) are still evolving slowly at the end of the solidification window (~16 s). The left panel shows that all runs use the same number of solver steps but the physical time axis (right) correctly reflects the R²-dependent kinetics.
 
-![Circularity vs time by radius](circ_vs_step_by_radius.png)
+![Circularity vs time by radius](outputs/circ_vs_step_by_radius.png)
 
 ---
 
@@ -111,7 +111,7 @@ At a fixed cooling rate of 50 °C/s, inclusions of different radii follow the ex
 
 At a fixed inclusion radius of 5 µm, slower cooling rates provide a longer window above the solidus and reach higher final circularity. The curves overlap at early times (when all samples are near 2100 °C and M is similar) and diverge as faster-cooled samples solidify first. The 5 °C/s curve (blue) continues rounding for ~60 s; the 200 °C/s curve (purple) is frozen by ~4 s.
 
-![Circularity vs time by cooling rate](circ_vs_step_by_cooling_rate.png)
+![Circularity vs time by cooling rate](outputs/circ_vs_step_by_cooling_rate.png)
 
 ---
 
@@ -123,9 +123,9 @@ The key summary plot. Each curve represents a different cooling rate; the dashed
 2. **Slower cooling rates produce higher final circularity** at every size, because more time is spent in the high-mobility temperature regime near the melt.
 3. **The curves fan out with increasing radius**, meaning cooling rate becomes progressively more discriminating for larger inclusions. For the smallest inclusions (2 µm), even the fastest cooling rate (200 °C/s) allows near-complete rounding because τ ≈ 3 s is short relative to t_solid ≈ 4 s. For 10 µm inclusions, final circularity ranges from 0.55 (5 °C/s) down to 0.27 (200 °C/s) — a clear, measurable difference that could in principle be read from experimental micrographs.
 
-![Final circularity vs radius](circularity_vs_radius.png)
+![Final circularity vs radius](outputs/circularity_vs_radius.png)
 
-![Micrograph](micrograph.png)
+![Micrograph](inputs/micrograph.png)
 
 ---
 
