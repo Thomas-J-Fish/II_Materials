@@ -11,9 +11,13 @@ Course_Revision/
 Course_Notes/
 **/__pycache__
 
-# Ignore specific Jupyter Notebook files
+# Ignore specific files
 Alloy_Design/Alloy Design Proposal.pdf
 Alloy_Design/COSHH AD Weigh Out.doc
 Alloy_Design/COSHH AD Weigh Out.pdf
 Alloy_Design/RA:COSHH Form Template.doc
+Alloy_Design/ADP Group 7 (1).pptx
+Alloy_Design/SoC - Alloy Design.pdf
+Alloy_Design/ADP_Poster_Group7.pdf
+RPi_Project/Code_submission_pointer.pdf
 **/*.pyc

@@ -22,7 +22,7 @@ CONFIG = {
     "interface_width": 3,
     "mean_radius_px": 28,
     "bc":                  "neumann",
-    "anisotropy_strength": 0.0,
+    "anisotropy_strength": 0,
     "n_fold":              6,
     "delta_T":    820.0,
     "T_melt":     2100.0,
@@ -40,14 +40,19 @@ CONFIG = {
 
 CR_COLOURS = {
     5.0:   "#4fc3f7",   # blue
-    10.0:  "#81d4fa",   # light blue
     20.0:  "#f48fb1",   # pink
     50.0:  "#ffcc80",   # orange
     100.0: "#a5d6a7",   # green
     200.0: "#ce93d8",   # purple
-    400.0: "#ef9a9a",   # red
 }
-RADIUS_COLOURS = ["#ffcc66", "#ce93d8", "#80cbc4", "#ef9a9a", "#bcaaa4", "#c03b0e"]
+RADIUS_COLOURS = [
+    "#ffcc66", 
+    "#ce93d8", 
+    "#80cbc4", 
+    "#ef9a9a", 
+    "#bcaaa4", 
+    "#c03b0e"
+    ]
 
 def _style_ax(ax):
     ax.spines["top"].set_visible(False)

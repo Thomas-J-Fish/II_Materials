@@ -116,7 +116,7 @@ The order parameter φ (1 = oxide, 0 = melt) evolves as:
 ∂φ/∂t = M_dimless [ ε² ∇²φ − W f'(φ) + λ ]
 ```
 
-The gradient term ε²∇²φ drives interface smoothing. The double-well term W f'(φ), where f(φ) = φ²(1−φ)², keeps the two phases distinct. λ is a volume-conserving Lagrange multiplier that enforces constant inclusion area — without it, Allen-Cahn minimises total perimeter by shrinking the inclusion to zero rather than just rounding it.
+The gradient term ε²∇²φ drives interface smoothing. The double-well term W f'(φ), where f(φ) = φ²(1−φ)², keeps the two phases distinct. λ is a volume-conserving Lagrange multiplier that enforces constant inclusion area; without it, Allen-Cahn minimises total perimeter by shrinking the inclusion to zero rather than just rounding it.
 
 The solver runs in dimensionless pixel units (ε = W = M_dimless = 1). Physical time is recovered via:
 
@@ -156,7 +156,7 @@ Area A is the pixel count inside the φ = 0.5 contour. Perimeter P counts pixel-
 | `T_melt` | 2100 °C | Melt hold temperature |
 | `T_solidus` | 1280 °C | Shape frozen below this |
 | `delta_T` | 820 °C | Full relaxation window |
-| `mobility` | 1×10⁻¹³ m³ J⁻¹ s⁻¹ | Most uncertain parameter — vary to explore sensitivity |
+| `mobility` | 1×10⁻¹³ m³ J⁻¹ s⁻¹ | Most uncertain parameter, vary to explore sensitivity |
 | `sigma` | 1.5 J m⁻² | Cramb & Jimbo (1992) |
 | `sweep_radii_um` | [2, 3.5, 5, 7, 10] µm | Range covering observed inclusion sizes |
 | `sweep_cooling_rates` | [5, 20, 50, 100, 200] °C/s | Copper block contact: 5–100 °C/s expected |

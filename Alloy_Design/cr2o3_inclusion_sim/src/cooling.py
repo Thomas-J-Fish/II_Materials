@@ -46,8 +46,7 @@ directly measured in the literature.  Physically reasonable estimates for
 solid oxide / liquid metal interfaces range from ~1e-10 to ~1e-8 m^3 J^-1 s^-1.
 This uncertainty spans two orders of magnitude and is the dominant source of
 quantitative error in any time-scale prediction.  The simulation therefore
-treats M_phys as a parameter to vary, allowing you to ask:
-  "For what mobility does the model reproduce my observed degree of rounding?"
+treats M_phys as a parameter to vary.
 
 Typical casting parameters for this alloy
 ------------------------------------------
